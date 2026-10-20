@@ -1,15 +1,16 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { StellarTransaction } from '@/types';
+import React, { useState } from 'react';
+import { StellarTransaction, StellarOperation } from '@/types';
 import { formatAddress, formatTokenAmount } from '@/utils/format';
+import { filterTransactionsByStatus } from '@/utils/transactionFilters';
+import type { TransactionStatusFilter } from '@/utils/transactionFilters';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import {
   ChevronLeft,
   ChevronRight,
   ArrowUpRight,
-  ArrowDownLeft,
   ExternalLink,
   Check,
   AlertCircle,
@@ -53,6 +54,8 @@ export default function TransactionTable({
   onPageChange,
   onPageSizeChange,
 }: TransactionTableProps) {
+  const [statusFilter, setStatusFilter] = useState<TransactionStatusFilter>('all');
+  const filteredTransactions = filterTransactionsByStatus(transactions, statusFilter);
   const totalPages = Math.ceil(totalCount / pageSize);
   const startIndex = (currentPage - 1) * pageSize + 1;
   const endIndex = Math.min(currentPage * pageSize, totalCount);
@@ -62,13 +65,13 @@ export default function TransactionTable({
     toast.success('Transaction hash copied');
   };
 
-  const getOperationType = (operations: any[]): string => {
+  const getOperationType = (operations: StellarOperation[]): string => {
     if (!operations || operations.length === 0) return 'Unknown';
     const mainOp = operations[0];
     return OPERATION_TYPE_LABELS[mainOp.type] || mainOp.type;
   };
 
-  const getOperationDetails = (operations: any[]): string | null => {
+  const getOperationDetails = (operations: StellarOperation[]): string | null => {
     if (!operations || operations.length === 0) return null;
     const mainOp = operations[0];
     return mainOp.amount ? `${formatTokenAmount(mainOp.amount, 2)} ${mainOp.asset}` : null;
@@ -112,6 +115,19 @@ export default function TransactionTable({
   return (
     <Card>
       <div className="space-y-4">
+        <label className="flex items-center gap-2 text-sm text-gray-300">
+          <span>Status</span>
+          <select
+            aria-label="Filter transactions by status"
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value as TransactionStatusFilter)}
+            className="px-2 py-1 bg-gray-900 border border-gray-700 rounded text-white"
+          >
+            <option value="all">All statuses</option>
+            <option value="successful">Successful</option>
+            <option value="failed">Failed</option>
+          </select>
+        </label>
         {/* Transactions Table */}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -141,7 +157,13 @@ export default function TransactionTable({
               </tr>
             </thead>
             <tbody>
-              {transactions.map((tx) => (
+              {filteredTransactions.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-8 px-4 text-center text-gray-400">
+                    No transactions match this status on this page
+                  </td>
+                </tr>
+              ) : filteredTransactions.map((tx) => (
                 <tr
                   key={tx.id}
                   className="border-b border-gray-800/50 hover:bg-gray-900/50 transition-colors"
@@ -235,7 +257,9 @@ export default function TransactionTable({
         <div className="flex items-center justify-between pt-4 border-t border-gray-800">
           <div className="flex items-center space-x-4">
             <span className="text-sm text-gray-400">
-              Showing {startIndex} to {endIndex} of {totalCount} transactions
+              {statusFilter === 'all'
+                ? `Showing ${startIndex} to ${endIndex} of ${totalCount} transactions`
+                : `Showing ${filteredTransactions.length} matching transactions on this page (${totalCount} total)`}
             </span>
             <div className="flex items-center space-x-2">
               <label className="text-sm text-gray-300">Per page:</label>

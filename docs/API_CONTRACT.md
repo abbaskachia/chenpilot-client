@@ -89,6 +89,8 @@ The service includes methods for Stellar/Starknet account and funding paths, but
 | `POST /auth/funding/batch-fund` | `{"amounts":["1","2.5"]}` | `{"success":true,"data":{"transactionHashes":["0xabc","0xdef"],"totalAmount":"3.5"}}` | Service method only; no direct screen caller found. |
 | `GET /account/{userId}/transactions?page={page}&limit={limit}` | `GET /account/u1/transactions?page=1&limit=10` | `{"success":true,"data":{"transactions":[],"total":0,"page":1,"limit":10}}` | Account transaction thunk/dashboard; errors are stored in account state. |
 
+Transaction records expose a `successful` boolean. The status filters therefore offer **Successful** and **Failed**; neither the account response nor Stellar Horizon's transaction list exposes a pending status, so pending must not be inferred as failed. The account endpoint currently supports `page` and `limit`, but not server-side status filtering; the dashboard table filters the currently loaded page.
+
 ## Contacts Endpoints
 
 `Contact` is `{ id, name, address, tokenType, createdAt, updatedAt, avatar?, isFavorite?, lastUsed? }`. Create requires `name`, `address`, and a `tokenType` from `XLM | USDC | USDT | BTC | ETH`; update accepts those fields optionally.

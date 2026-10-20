@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDispatch, useSelector } from "react-redux";
 import { RootState, AppDispatch } from "@/store";
@@ -9,6 +9,8 @@ import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
 import { formatDate, formatTokenAmount } from "@/utils/format";
+import { filterTransactionsByStatus } from "@/utils/transactionFilters";
+import type { TransactionStatusFilter } from "@/utils/transactionFilters";
 import { RefreshCw, ReceiptText } from "lucide-react";
 
 export default function TransactionsPage() {
@@ -16,6 +18,11 @@ export default function TransactionsPage() {
   const dispatch = useDispatch<AppDispatch>();
   const { status, transactions } = useSelector(
     (state: RootState) => state.account,
+  );
+  const [statusFilter, setStatusFilter] = useState<TransactionStatusFilter>("all");
+  const filteredTransactions = useMemo(
+    () => filterTransactionsByStatus(transactions.transactions, statusFilter),
+    [transactions.transactions, statusFilter],
   );
 
   useEffect(() => {
@@ -86,7 +93,22 @@ export default function TransactionsPage() {
         />
       ) : (
         <div className="space-y-4">
-          {transactions.transactions.map((tx) => (
+          <label className="flex items-center gap-2 text-sm">
+            <span>Status</span>
+            <select
+              aria-label="Filter transactions by status"
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as TransactionStatusFilter)}
+              className="rounded border border-gray-300 bg-white px-2 py-1 text-gray-900"
+            >
+              <option value="all">All statuses</option>
+              <option value="successful">Successful</option>
+              <option value="failed">Failed</option>
+            </select>
+          </label>
+          {filteredTransactions.length === 0 ? (
+            <p role="status">No transactions match this status.</p>
+          ) : filteredTransactions.map((tx) => (
             <Card key={tx.id} className="p-4">
               <div className="flex justify-between items-start mb-2">
                 <div>
