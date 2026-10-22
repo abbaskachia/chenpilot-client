@@ -15,6 +15,7 @@ export const env = {
   // Application Configuration
   APP_NAME: process.env.NEXT_PUBLIC_APP_NAME || 'ChenPilot',
   APP_VERSION: process.env.NEXT_PUBLIC_APP_VERSION || '1.0.0',
+  STELLAR_NETWORK: process.env.NEXT_PUBLIC_STELLAR_NETWORK || '',
 
   // Environment
   NODE_ENV: process.env.NODE_ENV || 'development',

@@ -1,4 +1,5 @@
 import { useDispatch } from 'react-redux';
+import { getSocketManager } from '@/services/socketManager';
 import { useCallback } from 'react';
 import { refreshToken } from '@/store/slices/authSlice';
 import { useAppSelector } from '@/store';
@@ -11,6 +12,15 @@ export function useTokenRefresh() {
   const refreshAccessToken = useCallback(async () => {
     try {
       const result = await dispatch(refreshToken()).unwrap();
+      const newToken = typeof result === 'string' ? result : result?.token;
+      if (newToken) {
+        try {
+          const manager = getSocketManager();
+          manager.updateAuth(newToken);
+        } catch {
+          // SocketManager not yet initialized
+        }
+      }
       return result;
     } catch (error) {
       console.error('Token refresh failed:', error);

@@ -152,11 +152,23 @@ export const sortMessagesChronologically = (messages: ChatMessage[]): ChatMessag
   });
 };
 
+export const ABORT_ERROR = "ABORT_ERR";
+
 export type SendMessageArg = string | { query: string; tempId?: string; clientTimestamp?: number };
+
+function isAbortError(error: unknown): boolean {
+  const err = error as { code?: string; name?: string; message?: string };
+  return (
+    err?.code === "ERR_CANCELED" ||
+    err?.name === "CanceledError" ||
+    err?.name === "AbortError" ||
+    err?.message === ABORT_ERROR
+  );
+}
 
 export const sendMessage = createAsyncThunk(
   'chat/sendMessage',
-  async (arg: SendMessageArg, { getState, rejectWithValue, requestId }) => {
+  async (arg: SendMessageArg, { getState, rejectWithValue, requestId, signal }) => {
     const query = typeof arg === 'string' ? arg : arg.query;
     const tempId = typeof arg === 'object' && arg.tempId ? arg.tempId : `msg_optimistic_${requestId}`;
     const clientTimestamp = typeof arg === 'object' && arg.clientTimestamp ? arg.clientTimestamp : Date.now();
@@ -186,19 +198,8 @@ export const sendMessage = createAsyncThunk(
         };
       }
 
-      // Generate server timestamp (should come from server in production)
-      const serverTimestamp = new Date().toISOString();
-
-      // Save user message with server timestamp
-      const userMessage: ChatMessage = {
-        id: `msg_user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        type: "user",
-        content: query,
-        timestamp: serverTimestamp,
-      };
-
       // Call the API service to get actual response
-      const response = await apiService.queryAgent({ userId, query });
+      const response = await apiService.queryAgent({ userId, query }, { signal });
 
       // Handle parsing of the agent response
       let content = response.result.data;
@@ -272,11 +273,61 @@ serverTimestamp: serverTimestamp,
 
       return { response, conversation, userMessage, agentMessage, tempId };
     } catch (error: any) {
+      if (signal.aborted || isAbortError(error)) {
+        return rejectWithValue(ABORT_ERROR);
+      }
       const errorMsg =
         error.response?.data?.message ||
         error.message ||
         "Failed to send message";
       return rejectWithValue(errorMsg);
+    }
+  },
+);
+
+export const regenerateLastResponse = createAsyncThunk(
+  "chat/regenerateLastResponse",
+  async (_, { getState, rejectWithValue, signal }) => {
+    const state = getState() as any;
+    if (state.chat.isTyping || state.chat.isLoading) {
+      return rejectWithValue("busy");
+    }
+    if (state.chat.currentConversation && state.chat.currentConversation.isActive === false) {
+      return rejectWithValue("inactive");
+    }
+    const messages: ChatMessage[] = state.chat.messages;
+    const lastAgent = [...messages].reverse().find((message) => message.type === "agent");
+    if (!lastAgent) {
+      return rejectWithValue("no agent message");
+    }
+    const agentIndex = messages.findIndex((message) => message.id === lastAgent.id);
+    const precedingUser = [...messages.slice(0, agentIndex)]
+      .reverse()
+      .find((message) => message.type === "user");
+    if (!precedingUser) {
+      return rejectWithValue("no user message");
+    }
+    const userId = state.auth.user?.id;
+    if (!userId) {
+      return rejectWithValue("User not authenticated");
+    }
+    try {
+      const response = await apiService.queryAgent(
+        { userId, query: String(precedingUser.content) },
+        { signal },
+      );
+      return {
+        agentId: lastAgent.id,
+        content: response.result.data,
+        response,
+      };
+    } catch (error: unknown) {
+      if (signal.aborted || isAbortError(error)) {
+        return rejectWithValue(ABORT_ERROR);
+      }
+      return rejectWithValue(
+        error instanceof Error ? error.message : "Failed to regenerate message",
+      );
     }
   },
 );
@@ -862,7 +913,6 @@ state.messages[index] = {
       .addCase(sendMessage.rejected, (state, action) => {
         state.isLoading = false;
         state.isTyping = false;
-        state.error = action.payload as string;
 
 const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
           ? action.meta.arg.tempId
@@ -872,6 +922,19 @@ const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
         const optimisticIdx = state.messages.findIndex(
           m => m.id === tempId || m.metadata?.optimisticId === tempId || m.metadata?.tempId === tempId
         );
+
+        if (action.payload === ABORT_ERROR || action.meta.aborted) {
+          state.error = null;
+          if (optimisticIdx !== -1) {
+            state.messages[optimisticIdx].metadata = {
+              ...state.messages[optimisticIdx].metadata,
+              status: "cancelled",
+            };
+          }
+          return;
+        }
+
+        state.error = action.payload as string;
 
         if (optimisticIdx !== -1) {
           state.messages[optimisticIdx].metadata = {
@@ -914,6 +977,38 @@ type: "error",
         };
         state.messages.push(errorMessage);
         state.messages = sortMessagesChronologically(state.messages);
+      })
+      .addCase(regenerateLastResponse.pending, (state) => {
+        state.isLoading = true;
+        state.isTyping = true;
+        state.error = null;
+      })
+      .addCase(regenerateLastResponse.fulfilled, (state, action) => {
+        state.isLoading = false;
+        state.isTyping = false;
+        const index = state.messages.findIndex((message) => message.id === action.payload.agentId);
+        if (index !== -1) {
+          state.messages[index] = {
+            ...state.messages[index],
+            content: action.payload.content,
+            metadata: {
+              ...state.messages[index].metadata,
+              status: "success",
+              success: action.payload.response.result.success,
+              error: action.payload.response.result.error,
+              executionTrace: action.payload.response.result.executionTrace,
+            },
+          };
+        }
+      })
+      .addCase(regenerateLastResponse.rejected, (state, action) => {
+        state.isLoading = false;
+        state.isTyping = false;
+        if (action.payload === ABORT_ERROR || action.payload === "busy" || action.payload === "inactive") {
+          state.error = null;
+          return;
+        }
+        state.error = action.payload as string;
       })
 
       // ── sendVoiceMessage ───────────────────────────────────────────────────

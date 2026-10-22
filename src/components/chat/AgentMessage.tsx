@@ -5,7 +5,7 @@ import { logger } from "../../utils/logger";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChatMessage } from "@/types";
-import { Copy, Check } from "lucide-react";
+import { Copy, Check, RefreshCw } from "lucide-react";
 import { CodeBlock } from "./CodeBlock";
 import ExecutionTrace from "./ExecutionTrace";
 
@@ -13,9 +13,17 @@ interface AgentMessageProps {
   message: ChatMessage;
   onCopy?: (text: string) => void;
   onReply?: (messageId: string) => void;
+  onRegenerate?: () => void;
+  canRegenerate?: boolean;
 }
 
-export default function AgentMessage({ message, onCopy, onReply }: AgentMessageProps) {
+export default function AgentMessage({
+  message,
+  onCopy,
+  onReply,
+  onRegenerate,
+  canRegenerate = false,
+}: AgentMessageProps) {
   const [copied, setCopied] = useState(false);
 
   // Handle both string and object content
@@ -331,17 +339,40 @@ export default function AgentMessage({ message, onCopy, onReply }: AgentMessageP
         <ExecutionTrace trace={message.metadata.executionTrace} />
       )}
 
-      <button
-        onClick={() => onReply(message.id)}
-        className="mt-1.5 flex items-center space-x-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
-        aria-label={`View ${message.replyCount} ${message.replyCount === 1 ? 'reply' : 'replies'}`}
-      >
-        <MessageSquare className="h-3.5 w-3.5" />
-        <span>
-          {message.replyCount} {message.replyCount === 1 ? 'reply' : 'replies'}
-        </span>
-      </button>
-    )}
+      {message.metadata?.status === "cancelled" && (
+        <p className="mt-2 text-xs text-amber-400">cancelled</p>
+      )}
+
+      <div className="mt-2 flex items-center space-x-3">
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="flex items-center space-x-1 text-xs text-gray-400 hover:text-white"
+        >
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          <span>{copied ? "Copied" : "Copy"}</span>
+        </button>
+        <button
+          type="button"
+          onClick={onRegenerate}
+          disabled={!canRegenerate}
+          className="flex items-center space-x-1 text-xs text-gray-400 hover:text-white disabled:opacity-40 disabled:hover:text-gray-400"
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+          <span>Regenerate</span>
+        </button>
+        {onReply && message.replyCount ? (
+          <button
+            type="button"
+            onClick={() => onReply(message.id)}
+            className="flex items-center space-x-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
+          >
+            <span>
+              {message.replyCount} {message.replyCount === 1 ? "reply" : "replies"}
+            </span>
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }

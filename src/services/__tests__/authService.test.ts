@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import authService from '../auth.service';
+import apiService from '../api';
 
 describe('AuthService', () => {
   beforeEach(() => {
+    authService.clearRecentAuthentication();
     // Clear localStorage before each test
     if (typeof window !== 'undefined') {
       localStorage.clear();
@@ -10,9 +12,58 @@ describe('AuthService', () => {
   });
 
   afterEach(() => {
+    authService.clearRecentAuthentication();
     if (typeof window !== 'undefined') {
       localStorage.clear();
     }
+  });
+
+  describe('reauthenticate', () => {
+    it('grants recent authentication only after backend verification succeeds', async () => {
+      const verifyCredentials = vi
+        .spyOn(apiService, 'reauthenticate')
+        .mockResolvedValue();
+
+      await authService.reauthenticate('test@example.com', 'current-password');
+
+      expect(verifyCredentials).toHaveBeenCalledWith(
+        'test@example.com',
+        'current-password',
+      );
+      expect(authService.hasRecentAuthentication()).toBe(true);
+    });
+
+    it('does not grant access when the backend rejects the credentials', async () => {
+      vi.spyOn(apiService, 'reauthenticate').mockRejectedValue(
+        new Error('Invalid credentials'),
+      );
+
+      await expect(
+        authService.reauthenticate('test@example.com', 'wrong-password'),
+      ).rejects.toThrow('Invalid credentials');
+      expect(authService.hasRecentAuthentication()).toBe(false);
+    });
+
+    it('expires the grant after five minutes', async () => {
+      let now = 1_000;
+      vi.spyOn(Date, 'now').mockImplementation(() => now);
+      vi.spyOn(apiService, 'reauthenticate').mockResolvedValue();
+
+      await authService.reauthenticate('test@example.com', 'current-password');
+      expect(authService.hasRecentAuthentication()).toBe(true);
+
+      now += 5 * 60 * 1000;
+      expect(authService.hasRecentAuthentication()).toBe(false);
+    });
+
+    it('clears the grant when the user cancels the protected action', async () => {
+      vi.spyOn(apiService, 'reauthenticate').mockResolvedValue();
+      await authService.reauthenticate('test@example.com', 'current-password');
+
+      authService.clearRecentAuthentication();
+
+      expect(authService.hasRecentAuthentication()).toBe(false);
+    });
   });
 
   describe('isAuthenticated', () => {

@@ -22,6 +22,7 @@ interface QueuedEvent {
 type SocketEventHandler = (...args: unknown[]) => void;
 
 export class SocketManager {
+  private isRefreshingToken = false;
   private socket: Socket | null = null;
   private config: SocketConfig;
   private reconnectAttempts = 0;
@@ -91,6 +92,31 @@ export class SocketManager {
     });
 
     return this.socket;
+  }
+
+  updateAuth(newToken: string): void {
+    if (this.config.options) {
+      this.config.options = {
+        ...this.config.options,
+        auth: { token: newToken },
+      };
+    } else {
+      this.config.options = { auth: { token: newToken } };
+    }
+
+    if (this.socket) {
+      if ((this.socket as any).auth) {
+        (this.socket as any).auth = { token: newToken };
+      }
+      if (!this.isRefreshingToken) {
+        this.isRefreshingToken = true;
+        this.removeRegisteredHandlers(this.socket);
+        this.socket.disconnect();
+        this.socket = null;
+        this.connect();
+        this.isRefreshingToken = false;
+      }
+    }
   }
 
   disconnect(): void {

@@ -1,4 +1,4 @@
-import axios, { AxiosError } from 'axios';
+import { AxiosError } from 'axios';
 import { RETRY_CONFIG } from '@/constants';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -8,6 +8,7 @@ interface RetryableConfig {
   method?: string;
   _retryCount?: number;
   _retry?: boolean; // set by the 401 auth-refresh path — must not collide
+  paymentOperation?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -28,6 +29,9 @@ interface RetryableConfig {
 export function isRetryableError(error: AxiosError): boolean {
   const config = error.config as RetryableConfig | undefined;
   if (!config) return false;
+
+  // Payment outcomes can be ambiguous after transport errors; never replay them.
+  if (config.paymentOperation) return false;
 
   // Already consumed the full retry budget.
   const attempt = config._retryCount ?? 0;

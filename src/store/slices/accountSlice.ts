@@ -6,49 +6,12 @@ import {
   AccountState,
 } from "@/types";
 import { horizonFetch } from "@/utils/horizonFetch";
-import { createSlice, PayloadAction } from '@reduxjs/toolkit';
-
-export interface TransactionFilters {
-  type: string;        // e.g., 'payment', 'swap', 'deposit'
-  asset: string;       // e.g., 'XLM', 'USDC'
-  direction: string;   // 'sent' | 'received' | 'all'
-  startDate: string;   // ISO string or YYYY-MM-DD
-  endDate: string;     // ISO string or YYYY-MM-DD
-}
-
-interface AccountState {
-  transactions: any[];
-  filters: TransactionFilters;
-  // ... existing state properties
-}
-
-const initialFilters: TransactionFilters = {
-  type: 'all',
-  asset: 'all',
-  direction: 'all',
-  startDate: '',
-  endDate: '',
-};
-
-const accountSlice = createSlice({
-  name: 'account',
-  initialState: {
-    transactions: [],
-    filters: initialFilters,
-  } as AccountState,
-  reducers: {
-    setTransactionFilter(
-      state,
-      action: PayloadAction<Partial<TransactionFilters>>
-    ) {
-      state.filters = { ...state.filters, ...action.payload };
-    },
-    clearTransactionFilters(state) {
-      state.filters = initialFilters;
-    },
-    // ... existing reducers
-  },
-});
+import apiService from "@/services/api";
+import {
+  mergeNewestTransactionHistory,
+  mergeTransactionHistory,
+  reconcilePendingConfirmations,
+} from "@/utils/transactionHistory";
 
 type NetworkHealthStatus = "healthy" | "degraded" | "down" | "unknown";
 type AccountSyncState = "synced" | "syncing" | "desynced";
@@ -60,6 +23,13 @@ const initialState: AccountState = {
     transactions: [],
     isLoading: false,
     error: null,
+    isRefreshing: false,
+    refreshError: null,
+    lastUpdatedAt: null,
+    nextCursor: null,
+    isLoadingMore: false,
+    loadMoreError: null,
+    pending: [],
   },
   isLoading: false,
   error: null,
@@ -177,46 +147,129 @@ export const getAutoFundingStats = createAsyncThunk(
   },
 );
 
+/** Number of ledger transactions requested per history page. */
+export const TRANSACTION_HISTORY_PAGE_SIZE = 50;
+
+export interface TransactionHistoryPage {
+  transactions: StellarTransaction[];
+  nextCursor: string | null;
+  /** ISO timestamp of when this page was read from the ledger. */
+  fetchedAt: string;
+}
+
+function mapHorizonTransaction(record: Record<string, unknown>): StellarTransaction {
+  return {
+    id: record.id as string,
+    hash: record.hash as string,
+    ledger: record.ledger as number,
+    created_at: record.created_at as string,
+    source_account: record.source_account as string,
+    fee_charged: record.fee_charged as string,
+    operation_count: record.operation_count as number,
+    successful: record.successful as boolean,
+    operations:
+      (record._embedded as { records?: Record<string, unknown>[] })?.records?.map(
+        (op: Record<string, unknown>) => ({
+          id: op.id as string,
+          type: op.type as string,
+          amount: op.amount as string,
+          asset:
+            op.asset_type === "native"
+              ? "XLM"
+              : `${op.asset_code}:${op.asset_issuer}`,
+          from: op.from as string,
+          to: op.to as string,
+          source_account: op.source_account as string,
+        }),
+      ) || [],
+  };
+}
+
+/**
+ * Read one page of account transactions from Horizon.
+ *
+ * The cursor is the standard Horizon paging token of the oldest record on the
+ * previous page, so it is only set when a full page came back (a short page
+ * means the history is exhausted).
+ */
+async function fetchTransactionHistoryPage(
+  publicKey: string,
+  cursor?: string,
+): Promise<TransactionHistoryPage> {
+  const params = new URLSearchParams({
+    order: "desc",
+    limit: String(TRANSACTION_HISTORY_PAGE_SIZE),
+  });
+  if (cursor) {
+    params.set("cursor", cursor);
+  }
+
+  const response = await horizonFetch(
+    `https://horizon.stellar.org/accounts/${publicKey}/transactions?${params.toString()}`,
+  );
+  if (!response.ok) {
+    throw new Error("Failed to fetch transaction history");
+  }
+
+  const data = await response.json();
+  const records: Record<string, unknown>[] = data?._embedded?.records ?? [];
+  const transactions = records.map(mapHorizonTransaction);
+  const oldestRecord = records[records.length - 1];
+  const nextCursor =
+    records.length === TRANSACTION_HISTORY_PAGE_SIZE &&
+    typeof oldestRecord?.paging_token === "string"
+      ? oldestRecord.paging_token
+      : null;
+
+  return { transactions, nextCursor, fetchedAt: new Date().toISOString() };
+}
+
 export const getTransactionHistory = createAsyncThunk(
   "account/getTransactionHistory",
   async (publicKey: string, { rejectWithValue }) => {
     try {
-      const response = await horizonFetch(
-        `https://horizon.stellar.org/accounts/${publicKey}/transactions?order=desc&limit=50`,
-      );
-      if (!response.ok) {
-        return rejectWithValue("Failed to fetch transaction history");
-      }
-      const data = await response.json();
-      const transactions: StellarTransaction[] = data._embedded.records.map(
-        (record: Record<string, unknown>) => ({
-          id: record.id,
-          hash: record.hash,
-          ledger: record.ledger,
-          created_at: record.created_at,
-          source_account: record.source_account,
-          fee_charged: record.fee_charged,
-          operation_count: record.operation_count,
-          successful: record.successful,
-          operations:
-            (record._embedded as { records?: Record<string, unknown>[] })?.records?.map((op: Record<string, unknown>) => ({
-              id: op.id,
-              type: op.type,
-              amount: op.amount,
-              asset:
-                op.asset_type === "native"
-                  ? "XLM"
-                  : `${op.asset_code}:${op.asset_issuer}`,
-              from: op.from,
-              to: op.to,
-              source_account: op.source_account,
-            })) || [],
-        }),
-      );
-      return transactions;
+      return await fetchTransactionHistoryPage(publicKey);
     } catch (error: unknown) {
       return rejectWithValue(
         (error as { message?: string }).message || "Failed to fetch transaction history",
+      );
+    }
+  },
+);
+
+/**
+ * Reload the newest history page only.
+ *
+ * No cursor is sent, so this never reloads (or drops) pages the user already
+ * paged back to. Results are merged into the existing history by hash.
+ */
+export const refreshTransactionHistory = createAsyncThunk(
+  "account/refreshTransactionHistory",
+  async (publicKey: string, { rejectWithValue }) => {
+    try {
+      return await fetchTransactionHistoryPage(publicKey);
+    } catch (error: unknown) {
+      return rejectWithValue(
+        (error as { message?: string }).message || "Failed to refresh transaction history",
+      );
+    }
+  },
+);
+
+/**
+ * Load the next older page, continuing from a Horizon cursor.
+ */
+export const getOlderTransactionHistory = createAsyncThunk(
+  "account/getOlderTransactionHistory",
+  async (
+    { publicKey, cursor }: { publicKey: string; cursor: string },
+    { rejectWithValue },
+  ) => {
+    try {
+      return await fetchTransactionHistoryPage(publicKey, cursor);
+    } catch (error: unknown) {
+      return rejectWithValue(
+        (error as { message?: string }).message || "Failed to load older transactions",
       );
     }
   },
@@ -271,6 +324,57 @@ const accountSlice = createSlice({
       state.status = null;
       state.balance = null;
       state.error = null;
+    },
+    /**
+     * Record a submitted wallet action as pending until authoritative data
+     * resolves it. An entry that already reached a terminal state is never
+     * regressed, and a definitive submission rejection must not call this.
+     */
+    trackPendingTransaction: (
+      state,
+      action: PayloadAction<{ hash: string; label: string; at: string }>,
+    ) => {
+      const { hash, label, at } = action.payload;
+      const existing = state.transactions.pending.find(
+        (entry) => entry.hash === hash,
+      );
+      if (existing) {
+        existing.label = label;
+        return;
+      }
+      state.transactions.pending.push({
+        hash,
+        label,
+        status: "pending",
+        updatedAt: at,
+      });
+    },
+    /**
+     * Move a tracked transaction to an authoritative terminal state.
+     */
+    resolvePendingTransaction: (
+      state,
+      action: PayloadAction<{
+        hash: string;
+        status: "confirmed" | "failed";
+        at: string;
+      }>,
+    ) => {
+      const { hash, status, at } = action.payload;
+      const existing = state.transactions.pending.find(
+        (entry) => entry.hash === hash,
+      );
+      if (existing) {
+        existing.status = status;
+        existing.updatedAt = at;
+        return;
+      }
+      state.transactions.pending.push({
+        hash,
+        label: "Transaction",
+        status,
+        updatedAt: at,
+      });
     },
   },
   extraReducers: (builder) => {
@@ -408,13 +512,80 @@ const accountSlice = createSlice({
         state.transactions.error = null;
       })
       .addCase(getTransactionHistory.fulfilled, (state, action) => {
+        const { transactions, nextCursor, fetchedAt } = action.payload;
         state.transactions.isLoading = false;
-        state.transactions.transactions = action.payload;
+        state.transactions.transactions = transactions;
+        state.transactions.nextCursor = nextCursor;
+        state.transactions.lastUpdatedAt = fetchedAt;
         state.transactions.error = null;
+        state.transactions.refreshError = null;
+        state.transactions.loadMoreError = null;
+        state.transactions.pending = reconcilePendingConfirmations(
+          state.transactions.pending,
+          transactions,
+          fetchedAt,
+        );
       })
       .addCase(getTransactionHistory.rejected, (state, action) => {
         state.transactions.isLoading = false;
         state.transactions.error = action.payload as string;
+      })
+      // Refresh Transaction History (newest page only, merged by hash)
+      .addCase(refreshTransactionHistory.pending, (state) => {
+        state.transactions.isRefreshing = true;
+        state.transactions.refreshError = null;
+      })
+      .addCase(refreshTransactionHistory.fulfilled, (state, action) => {
+        const { transactions, nextCursor, fetchedAt } = action.payload;
+        const hadHistory = state.transactions.transactions.length > 0;
+
+        state.transactions.transactions = mergeNewestTransactionHistory(
+          state.transactions.transactions,
+          transactions,
+        );
+        // Keep the existing cursor so pages the user already loaded stay
+        // reachable. The refreshed cursor is only adopted when this refresh is
+        // the first data the slice has seen.
+        if (!hadHistory) {
+          state.transactions.nextCursor = nextCursor;
+        }
+        state.transactions.isRefreshing = false;
+        state.transactions.lastUpdatedAt = fetchedAt;
+        state.transactions.refreshError = null;
+        state.transactions.pending = reconcilePendingConfirmations(
+          state.transactions.pending,
+          transactions,
+          fetchedAt,
+        );
+      })
+      .addCase(refreshTransactionHistory.rejected, (state, action) => {
+        // A failed refresh must not clear, reorder, or terminalize anything.
+        state.transactions.isRefreshing = false;
+        state.transactions.refreshError = action.payload as string;
+      })
+      // Load Older Transactions
+      .addCase(getOlderTransactionHistory.pending, (state) => {
+        state.transactions.isLoadingMore = true;
+        state.transactions.loadMoreError = null;
+      })
+      .addCase(getOlderTransactionHistory.fulfilled, (state, action) => {
+        const { transactions, nextCursor, fetchedAt } = action.payload;
+        state.transactions.transactions = mergeTransactionHistory(
+          state.transactions.transactions,
+          transactions,
+        );
+        state.transactions.nextCursor = nextCursor;
+        state.transactions.isLoadingMore = false;
+        state.transactions.loadMoreError = null;
+        state.transactions.pending = reconcilePendingConfirmations(
+          state.transactions.pending,
+          transactions,
+          fetchedAt,
+        );
+      })
+      .addCase(getOlderTransactionHistory.rejected, (state, action) => {
+        state.transactions.isLoadingMore = false;
+        state.transactions.loadMoreError = action.payload as string;
       })
       // Get Account Transactions
       .addCase(getAccountTransactions.pending, (state) => {
@@ -433,6 +604,12 @@ const accountSlice = createSlice({
   },
 });
 
-export const { clearError, updateAccountStatus, updateBalance, clearAccount } =
-  accountSlice.actions;
+export const {
+  clearError,
+  updateAccountStatus,
+  updateBalance,
+  clearAccount,
+  trackPendingTransaction,
+  resolvePendingTransaction,
+} = accountSlice.actions;
 export default accountSlice.reducer;

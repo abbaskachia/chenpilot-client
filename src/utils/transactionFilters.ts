@@ -1,8 +1,11 @@
+
 import type { StellarTransaction } from "@/types";
 
 export type TransactionStatusFilter = "all" | "successful" | "failed";
 
-export function filterTransactionsByStatus<T extends Pick<StellarTransaction, "successful">>(
+export function filterTransactionsByStatus<
+  T extends Pick<StellarTransaction, "successful">
+>(
   transactions: T[],
   status: TransactionStatusFilter,
 ): T[] {
@@ -11,5 +14,8 @@ export function filterTransactionsByStatus<T extends Pick<StellarTransaction, "s
   }
 
   const successful = status === "successful";
-  return transactions.filter((transaction) => transaction.successful === successful);
+
+  return transactions.filter(
+    (transaction) => transaction.successful === successful,
+  );
 }

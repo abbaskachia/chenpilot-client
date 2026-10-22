@@ -8,6 +8,15 @@ export const API_CONFIG = {
   RETRY_DELAY: 1000,
 } as const;
 
+export const RETRY_CONFIG = {
+  MAX_ATTEMPTS: 3,
+  RETRYABLE_STATUS_CODES: [408, 429, ...Array.from({ length: 100 }, (_, index) => 500 + index)],
+  IDEMPOTENT_METHODS: ['get', 'head', 'options'],
+  BASE_DELAY_MS: 1000,
+  MAX_DELAY_MS: 30000,
+  JITTER_MS: 1000,
+} as const;
+
 // Application Information
 export const APP_CONFIG = {
   NAME: 'ChenPilot',
@@ -180,10 +189,10 @@ export const VALIDATION_MESSAGES = {
   AMOUNT_EXCEEDS_MAX: 'Amount cannot exceed 1,000,000',
   AMOUNT_EXCEEDS_MIN: 'Amount must be at least 0.0000001',
   TOKEN_TYPE_REQUIRED: 'Please select a token type',
-  MEMO_TOO_LONG: 'Memo cannot exceed 28 characters',
+  MEMO_TOO_LONG: 'Text memo cannot exceed 28 UTF-8 bytes',
   MEMO_TYPE_REQUIRED: 'Memo type is required when memo is provided',
   MEMO_INVALID_FORMAT: 'Invalid memo format for the selected memo type',
-  MEMO_ID_INVALID: 'Memo ID must contain only digits',
+  MEMO_ID_INVALID: 'Memo ID must be an unsigned 64-bit integer',
   MEMO_HASH_INVALID: 'Memo hash must be a 64-character hexadecimal string',
 } as const;
 
@@ -211,7 +220,7 @@ export const PAYMENT_LIMITS = {
 // Security Validation Constants
 export const SECURITY_VALIDATION = {
   STELLAR_ADDRESS_REGEX: /^G[A-Z0-9]{55}$/,
-  MEMO_ID_REGEX: /^\d+$/,
+  MEMO_ID_REGEX: /^\d{1,20}$/,
   MEMO_HASH_REGEX: /^[a-fA-F0-9]{64}$/,
   AMOUNT_REGEX: /^\d+(\.\d{1,7})?$/,
   MAX_RECIPIENT_ADDRESSES_PER_TRANSACTION: 1,
@@ -254,6 +263,7 @@ export const QUERY_KEYS = {
 // Pagination
 export const PAGINATION = {
   DEFAULT_PAGE_SIZE: 20,
+  CONTACTS_PAGE_SIZE: 24,
   MAX_PAGE_SIZE: 100,
   PAGE_SIZE_OPTIONS: [10, 20, 50, 100],
 } as const;

@@ -1,29 +1,33 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { logger } from "../utils/logger";
-import { 
-  RegisterRequest, 
-  LoginRequest, 
-  RegisterResponse, 
-  LoginResponse, 
-  User, 
-  Contact, 
-  CreateContactRequest, 
+import {
+  RegisterRequest,
+  LoginRequest,
+  RegisterResponse,
+  LoginResponse,
+  User,
+  Contact,
+  CreateContactRequest,
   UpdateContactRequest,
+  SendPaymentRequest,
   BalanceResponse,
   AgentQueryRequest,
   AgentQueryResponse,
   ApiResponse,
-  ChatMessage,
-  Conversation,
   PromptVersionRecord,
-  LiquidityPool,
   LiquidityStats,
   LiquidityRequest,
   StellarTransaction,
   AuditLogEntry,
   AuditLogsQueryParams,
   AuditLogsResponse,
-  AuditLogStats
+  AuditLogStats,
+  MfaStatusData,
+  MfaEnrollmentData,
+  MfaVerifyRequest,
+  MfaVerifyData,
+  PaymentSubmissionResult,
+  PaymentStatusResult,
 } from '@/types';
 import agentService from './agentService';
 import { tokenRefreshService } from './tokenRefreshService';
@@ -34,10 +38,49 @@ import {
   incrementRetryCount,
   retryLabel,
 } from '@/utils/retryUtils';
-
-import axios from 'axios';
+import { buildPaymentIdempotencyKey } from '@/utils/paymentIdempotency';
+import { PaymentOutcomeUnknownError, isPaymentOutcomeUnknown } from '@/utils/paymentOutcome';
 
 const FRIENDTEST_URL = 'https://friendbot.stellar.org';
+
+/**
+ * Narrowly-scoped single-flight guard for keyed asynchronous work.
+ *
+ * While a key is in flight, additional calls for the same key reuse the pending
+ * promise instead of issuing a duplicate request. The entry is released on both
+ * success and failure, so a failed attempt never blocks a later retry.
+ *
+ * The guard deliberately lives outside React state: two clicks dispatched in
+ * the same tick must be deduplicated even though no re-render has happened yet,
+ * and `finally`-style cleanup cannot be skipped by an unmount.
+ */
+export class SingleFlight {
+  private inFlight = new Map<string, Promise<unknown>>();
+
+  isInFlight(key: string): boolean {
+    return this.inFlight.has(key);
+  }
+
+  run<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const pending = this.inFlight.get(key) as Promise<T> | undefined;
+    if (pending) {
+      return pending;
+    }
+
+    const promise = Promise.resolve().then(task);
+    this.inFlight.set(key, promise);
+    const release = () => {
+      if (this.inFlight.get(key) === promise) {
+        this.inFlight.delete(key);
+      }
+    };
+    promise.then(release, release);
+
+    return promise;
+  }
+}
+
+export const singleFlight = new SingleFlight();
 
 export interface FundingResult {
   success: boolean;
@@ -76,7 +119,7 @@ export const requestAccountFunding = async (
           message: 'Account funded successfully via Stellar Testnet Friendbot fallback.',
           txHash: friendbotResponse.data.hash,
         };
-      } catch (friendbotError: unknown) {
+      } catch {
         throw new Error(
           `Funding failed: Backend service unavailable and Friendbot fallback failed. Required: ${requiredAmount} XLM, Current: ${currentBalance} XLM.`
         );
@@ -107,6 +150,10 @@ type MinimalStore = {
 };
 
 let _store: MinimalStore | null = null;
+
+interface PaymentRequestConfig extends AxiosRequestConfig {
+  paymentOperation?: boolean;
+}
 
 /**
  * Main API service handling HTTP requests, authentication state,
@@ -311,6 +358,21 @@ class ApiService {
       this.setToken((response.data as { data: { token: string } }).data.token);
     }
     return response.data;
+  }
+
+  /**
+   * Verify current credentials without changing the active session token.
+   */
+  async reauthenticate(email: string, password: string): Promise<void> {
+    const response = await axios.post<LoginResponse>(
+      this.api.getUri({ url: '/auth/login' }),
+      { email, password },
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+
+    if (!response.data?.success) {
+      throw new Error(response.data?.message || 'Re-authentication failed');
+    }
   }
 
   /**
@@ -650,6 +712,43 @@ class ApiService {
     return response.data;
   }
 
+  async sendPayment(
+    payment: SendPaymentRequest,
+    idempotencyKey: string,
+  ): Promise<PaymentSubmissionResult> {
+    try {
+      const response = await this.api.post<PaymentSubmissionResult>('/payments', payment, {
+        headers: { 'Idempotency-Key': idempotencyKey },
+        paymentOperation: true,
+      } as PaymentRequestConfig);
+      const payload = response.data as PaymentSubmissionResult | ApiResponse<PaymentSubmissionResult>;
+      if ('success' in payload) {
+        if (!payload.success) throw new Error(payload.message || 'Payment submission failed.');
+        return payload.data;
+      }
+      return payload;
+    } catch (error) {
+      if (isPaymentOutcomeUnknown(error)) {
+        throw new PaymentOutcomeUnknownError(
+          'We could not confirm whether the payment was submitted. Check its status before taking any further action.',
+        );
+      }
+      throw error;
+    }
+  }
+
+  async getPaymentStatus(idempotencyKey: string): Promise<PaymentStatusResult> {
+    const response = await this.api.get<PaymentStatusResult>('/payments/status', {
+      params: { idempotencyKey },
+    });
+    const payload = response.data as PaymentStatusResult | ApiResponse<PaymentStatusResult>;
+    if ('success' in payload) {
+      if (!payload.success) throw new Error(payload.message || 'Payment status is unavailable.');
+      return payload.data;
+    }
+    return payload;
+  }
+
   // Contact management - Note: Contact endpoints are not available in experimental backend
   // Contact management is handled through the agent query system
 
@@ -753,6 +852,25 @@ class ApiService {
     }
   }
 
+  /**
+   * Submit a payment using a deterministic idempotency key so rapid duplicate
+   * clicks retry the same request rather than creating duplicate transfers.
+   */
+  async sendPayment(data: SendPaymentRequest): Promise<ApiResponse<{ paymentId: string; status: string }>> {
+    const idempotencyKey = data.idempotencyKey || buildPaymentIdempotencyKey(data);
+
+    const response = await this.api.post<ApiResponse<{ paymentId: string; status: string }>>('/payments', {
+      ...data,
+      idempotencyKey,
+    }, {
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+    });
+
+    return response.data;
+  }
+
   // Agent query - Optimized for backend integration
 
   /**
@@ -774,14 +892,24 @@ class ApiService {
    * }
    * ```
    */
-  async queryAgent(data: AgentQueryRequest): Promise<AgentQueryResponse> {
+  async queryAgent(data: AgentQueryRequest, options?: { signal?: AbortSignal }): Promise<AgentQueryResponse> {
+    const isAbort = (error: unknown) => {
+      const axiosError = error as { code?: string; name?: string };
+      return (
+        axiosError.code === 'ERR_CANCELED' ||
+        axiosError.name === 'CanceledError' ||
+        axiosError.name === 'AbortError'
+      );
+    };
+
     // First try the experimental agent service
     try {
       if (agentService.isAgentConnected()) {
         logger.debug('[ApiService] Using experimental agent service');
-        return await agentService.queryAgent(data);
+        return await agentService.queryAgent(data, options);
       }
     } catch (error) {
+      if (isAbort(error)) throw error;
       console.warn('[ApiService] Experimental agent service failed, falling back to backend:', error);
     }
 
@@ -792,7 +920,7 @@ class ApiService {
       }
 
       logger.debug('[ApiService] Querying backend /query endpoint');
-      const response = await this.api.post('/query', data);
+      const response = await this.api.post('/query', data, { signal: options?.signal });
       
       // The system returns response.data directly or wrapped in { result: ... }
       if (response.data && response.data.result) {
@@ -815,6 +943,7 @@ class ApiService {
         }
       };
     } catch (error: unknown) {
+      if (isAbort(error)) throw error;
       console.error('[ApiService] Backend query failed:', error);
       // Convert technical errors to user-friendly messages
       let friendlyMessage = 'Query failed. Please try again.';
@@ -1082,6 +1211,100 @@ class ApiService {
       responseType: 'blob',
     });
     return response.data;
+  }
+
+  /**
+   * Fetch current MFA status for the authenticated user.
+   * Catches 404 from experimental backend and returns a fallback envelope.
+   *
+   * @returns Promise resolving to `ApiResponse<MfaStatusData>`.
+   */
+  async getMfaStatus(): Promise<ApiResponse<MfaStatusData>> {
+    try {
+      const response = await this.api.get<ApiResponse<MfaStatusData>>('/auth/mfa/status');
+      return response.data;
+    } catch (error: unknown) {
+      if ((error as { response?: { status?: number } }).response?.status === 404) {
+        return {
+          success: false,
+          status: 404,
+          message: 'MFA endpoints are not currently supported by the backend service',
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Initiate MFA enrollment for the authenticated user.
+   * Catches 404 from experimental backend and returns a fallback envelope.
+   *
+   * @returns Promise resolving to `ApiResponse<MfaEnrollmentData>`.
+   */
+  async initiateMfaEnrollment(): Promise<ApiResponse<MfaEnrollmentData>> {
+    try {
+      const response = await this.api.post<ApiResponse<MfaEnrollmentData>>('/auth/mfa/enroll');
+      return response.data;
+    } catch (error: unknown) {
+      if ((error as { response?: { status?: number } }).response?.status === 404) {
+        return {
+          success: false,
+          status: 404,
+          message: 'MFA enrollment is not currently supported by the backend service',
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Verify MFA enrollment code.
+   * Requires authoritative confirmation from backend before MFA is enabled.
+   *
+   * @param data - Payload containing 6-digit TOTP code.
+   * @returns Promise resolving to `ApiResponse<MfaVerifyData>`.
+   */
+  async verifyMfaEnrollment(data: MfaVerifyRequest): Promise<ApiResponse<MfaVerifyData>> {
+    try {
+      const response = await this.api.post<ApiResponse<MfaVerifyData>>('/auth/mfa/verify', data);
+      return response.data;
+    } catch (error: unknown) {
+      if ((error as { response?: { status?: number } }).response?.status === 404) {
+        return {
+          success: false,
+          status: 404,
+          message: 'MFA verification is not currently supported by the backend service',
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Request account deletion. Local token, conversations and drafts are cleared
+   * even when the API call fails so the client does not keep private copies.
+   * On-chain history cannot be deleted from this client.
+   */
+  async deleteAccount(): Promise<{
+    api: boolean;
+    token: boolean;
+    conversations: boolean;
+    drafts: boolean;
+    removed: string[];
+    remaining: string[];
+    onChainHistoryDeleted: false;
+  }> {
+    const { clearAccountLocalStorage } = await import('@/lib/accountDeletion');
+    let api = false;
+    try {
+      await this.api.delete('/account');
+      api = true;
+    } catch {
+      api = false;
+    }
+    const local = clearAccountLocalStorage();
+    this.token = null;
+    return { api, ...local, onChainHistoryDeleted: false };
   }
 
   /**

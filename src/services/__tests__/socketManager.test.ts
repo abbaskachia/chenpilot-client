@@ -102,6 +102,15 @@ describe('SocketManager', () => {
       expect(socket).toBeDefined();
     });
 
+    it('should handle token update and safe single reconnect', () => {
+      const socket = socketManager.connect();
+      expect(io).toHaveBeenCalledTimes(1);
+
+      // Update auth token when connected
+      socketManager.updateAuth('new-expired-token-or-refreshed');
+      expect(socket.disconnect).toHaveBeenCalled();
+    });
+
     it('should return existing socket if already connected', () => {
       const socket1 = socketManager.connect();
       // Simulate the socket becoming connected so the second connect() reuses it
@@ -233,6 +242,18 @@ describe('SocketManager', () => {
 
     it('should not throw if once called without connection', () => {
       expect(() => socketManager.once('test-event', vi.fn())).not.toThrow();
+    });
+
+    it('should handle concurrent updateAuth triggers safely without duplicate reconnections', () => {
+      const socket = socketManager.connect();
+      expect(io).toHaveBeenCalledTimes(1);
+
+      // Trigger concurrent token updates
+      socketManager.updateAuth('token-1');
+      socketManager.updateAuth('token-2');
+
+      // Should cleanly disconnect and reconnect once
+      expect(socket.disconnect).toHaveBeenCalled();
     });
 
     // Regression: calling off() then on() with the same handler (as SocketProvider

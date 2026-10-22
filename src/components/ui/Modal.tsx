@@ -5,6 +5,8 @@ export interface ModalProps {
   onClose: () => void;
   title?: string;
   ariaLabel?: string;
+  className?: string;
+  titleClassName?: string;
   children: React.ReactNode;
 }
 
@@ -13,6 +15,8 @@ export const Modal: React.FC<ModalProps> = ({
   onClose,
   title,
   ariaLabel,
+  className,
+  titleClassName,
   children,
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
@@ -104,10 +108,10 @@ export const Modal: React.FC<ModalProps> = ({
         aria-label={!title ? ariaLabel : undefined}
         tabIndex={-1}
         onKeyDown={handleKeyDown}
-        className="relative w-full max-w-lg rounded-lg bg-white p-6 shadow-xl focus:outline-none"
+        className={`relative w-full max-w-lg rounded-lg bg-white p-6 shadow-xl focus:outline-none ${className ?? ''}`}
       >
         {title && (
-          <h2 id={titleId} className="text-xl font-semibold text-gray-900 mb-4">
+          <h2 id={titleId} className={`text-xl font-semibold text-gray-900 mb-4 ${titleClassName ?? ''}`}>
             {title}
           </h2>
         )}

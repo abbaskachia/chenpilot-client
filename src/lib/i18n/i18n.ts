@@ -1,4 +1,12 @@
-import { translations, Language, LANGUAGES } from './translations';
+import {
+  translations,
+  Language,
+  LANGUAGES,
+  LANGUAGE_TO_LOCALE,
+  getLocaleForLanguage,
+} from './translations';
+
+export { Language, LANGUAGES, LANGUAGE_TO_LOCALE, getLocaleForLanguage };
 
 export function getLanguageDirection(lang: Language): 'ltr' | 'rtl' {
   const langData = LANGUAGES.find(l => l.code === lang);
@@ -7,21 +15,21 @@ export function getLanguageDirection(lang: Language): 'ltr' | 'rtl' {
 
 export function t(lang: Language, path: string): string {
   const keys = path.split('.');
-  let value: any = translations[lang];
+  let value: unknown = translations[lang];
 
   for (const key of keys) {
-    value = value?.[key];
+    value = (value as Record<string, unknown> | undefined)?.[key];
   }
 
   // Fallback to English if translation missing
   if (!value) {
     value = translations.en;
     for (const key of keys) {
-      value = value?.[key];
+      value = (value as Record<string, unknown> | undefined)?.[key];
     }
   }
 
-  return value || path;
+  return (value as string) || path;
 }
 
 export function getStoredLanguage(): Language {

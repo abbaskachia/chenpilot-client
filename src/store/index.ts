@@ -5,6 +5,7 @@ import accountSlice from './slices/accountSlice';
 import contactsSlice from './slices/contactsSlice';
 import chatSlice, { initializeChatHistory } from './slices/chatSlice';
 import uiSlice from './slices/uiSlice';
+import presenceSlice from './slices/presenceSlice';
 import apiService from '@/services/api';
 
 export const store = configureStore({

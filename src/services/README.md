@@ -10,7 +10,8 @@ This directory contains the Socket.io integration for the ChenPilot client appli
 ## Components
 
 - `src/components/providers/SocketProvider.tsx` - React context provider for Socket.io
-- `src/components/examples/SocketStatusIndicator.tsx` - Example component showing connection status
+- `src/components/status/SocketStatusIndicator.tsx` - Connection status UI
+- `docs/examples/` - Development-only demos (not bundled). See `docs/examples/README.md`.
 
 ## Hooks
 
@@ -73,7 +74,7 @@ function ChatComponent() {
 
 ```tsx
 import { useSocketConnection } from '@/hooks/useSocket';
-import { SocketStatusIndicator } from '@/components/examples/SocketStatusIndicator';
+import { SocketStatusIndicator } from '@/components/status/SocketStatusIndicator';
 
 function Header() {
   return (

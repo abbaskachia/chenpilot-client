@@ -26,6 +26,11 @@ export const translations = {
       theme: 'Theme',
       light: 'Light',
       dark: 'Dark',
+      mfaTitle: 'Two-Factor Authentication',
+      mfaDescription: 'Add an extra layer of security to your account with two-factor authentication.',
+      mfaStatus: 'Status',
+      mfaEnabled: 'Enabled',
+      mfaDisabled: 'Disabled',
     },
   },
   ar: {
@@ -55,6 +60,11 @@ export const translations = {
       theme: 'المظهر',
       light: 'فاتح',
       dark: 'داكن',
+      mfaTitle: 'المصادقة الثنائية',
+      mfaDescription: 'أضف طبقة أمان إضافية لحسابك باستخدام المصادقة الثنائية.',
+      mfaStatus: 'الحالة',
+      mfaEnabled: 'مفعل',
+      mfaDisabled: 'معطل',
     },
   },
   es: {
@@ -84,6 +94,11 @@ export const translations = {
       theme: 'Tema',
       light: 'Claro',
       dark: 'Oscuro',
+      mfaTitle: 'Autenticación de dos factores',
+      mfaDescription: 'Añade una capa adicional de seguridad a tu cuenta con la autenticación de dos factores.',
+      mfaStatus: 'Estado',
+      mfaEnabled: 'Activado',
+      mfaDisabled: 'Desactivado',
     },
   },
   fr: {
@@ -113,6 +128,11 @@ export const translations = {
       theme: 'Thème',
       light: 'Clair',
       dark: 'Sombre',
+      mfaTitle: 'Authentification à deux facteurs',
+      mfaDescription: 'Ajoutez une couche de sécurité supplémentaire à votre compte avec l\'authentification à deux facteurs.',
+      mfaStatus: 'Statut',
+      mfaEnabled: 'Activé',
+      mfaDisabled: 'Désactivé',
     },
   },
 } as const;
@@ -126,3 +146,21 @@ export const LANGUAGES: { code: Language; name: string; dir: 'ltr' | 'rtl' }[] =
   { code: 'es', name: 'Español', dir: 'ltr' },
   { code: 'fr', name: 'Français', dir: 'ltr' },
 ];
+
+export const LANGUAGE_TO_LOCALE: Record<Language, string> = {
+  en: 'en-US',
+  ar: 'ar-SA',
+  es: 'es-ES',
+  fr: 'fr-FR',
+};
+
+export function getLocaleForLanguage(lang?: Language | string): string {
+  if (!lang) return 'en-US';
+  if (lang in LANGUAGE_TO_LOCALE) {
+    return LANGUAGE_TO_LOCALE[lang as Language];
+  }
+  if (typeof lang === 'string' && lang.includes('-')) {
+    return lang;
+  }
+  return 'en-US';
+}

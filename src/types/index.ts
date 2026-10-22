@@ -82,12 +82,37 @@ export interface LoginResponse {
   };
 }
 
+// Multi-Factor Authentication (MFA) Types
+export interface MfaStatusData {
+  enabled: boolean;
+  enrolledAt?: string;
+  method?: "totp" | null;
+}
+
+export interface MfaEnrollmentData {
+  secret: string;
+  qrCodeUrl?: string;
+  otpAuthUri?: string;
+  recoveryCodes?: string[];
+}
+
+export interface MfaVerifyRequest {
+  code: string;
+}
+
+export interface MfaVerifyData {
+  enabled: boolean;
+  message?: string;
+  recoveryCodes?: string[];
+}
+
 // Contact Management Types
 export interface Contact {
   id: string;
   name: string;
   address: string;
-  tokenType: "XLM" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  tokenType: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  note?: string;
   createdAt: string;
   updatedAt: string;
   avatar?: string;
@@ -98,13 +123,15 @@ export interface Contact {
 export interface CreateContactRequest {
   name: string;
   address: string;
-  tokenType: "XLM" | "USDC" | "USDT" | "BTC" | "ETH";
+  tokenType: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  note?: string;
 }
 
 export interface UpdateContactRequest {
   name?: string;
   address?: string;
-  tokenType?: "XLM" | "USDC" | "USDT" | "BTC" | "ETH";
+  tokenType?: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  note?: string;
 }
 
 // Balance and Wallet Types
@@ -126,6 +153,8 @@ export interface WalletBalance {
 }
 
 // Stellar Transaction Types
+export type TransactionDirection = 'incoming' | 'outgoing' | 'self' | 'unknown';
+
 export interface StellarOperation {
   id: string;
   type: string; // e.g., 'payment', 'create_account', 'trust', etc.
@@ -134,6 +163,7 @@ export interface StellarOperation {
   from?: string;
   to?: string;
   source_account: string;
+  direction?: TransactionDirection;
 }
 
 export interface StellarTransaction {
@@ -146,12 +176,47 @@ export interface StellarTransaction {
   operation_count: number;
   successful: boolean;
   operations: StellarOperation[];
+  direction?: TransactionDirection;
+}
+
+/**
+ * Lifecycle of a wallet action.
+ *
+ * `pending` means the action was submitted but no authoritative data has
+ * confirmed its outcome yet. Only authoritative ledger data may move an entry
+ * to `confirmed`, and only an authoritative failure (or a definitive submission
+ * rejection) may move it to `failed`.
+ */
+export type TransactionLifecycleStatus = "pending" | "confirmed" | "failed";
+
+export interface PendingTransactionConfirmation {
+  /** Normalized transaction hash — the stable reconciliation key. */
+  hash: string;
+  /** Human-readable description of the wallet action. */
+  label: string;
+  status: TransactionLifecycleStatus;
+  /** ISO timestamp of the last status change for this entry. */
+  updatedAt: string;
 }
 
 export interface TransactionHistory {
   transactions: StellarTransaction[];
   isLoading: boolean;
   error: string | null;
+  /** True while a newest-page refresh is in flight (background refresh). */
+  isRefreshing: boolean;
+  /** Error from the most recent refresh attempt; existing history is preserved. */
+  refreshError: string | null;
+  /** ISO timestamp of the last successful authoritative sync of the newest page. */
+  lastUpdatedAt: string | null;
+  /** Cursor for the next (older) page, or null when there is no next page. */
+  nextCursor: string | null;
+  /** True while an older page is being loaded. */
+  isLoadingMore: boolean;
+  /** Error from the most recent older-page load; existing history is preserved. */
+  loadMoreError: string | null;
+  /** Submitted transactions awaiting authoritative confirmation, keyed by hash. */
+  pending: PendingTransactionConfirmation[];
 }
 
 // Agent Query Types
@@ -224,7 +289,7 @@ export interface ChatMessage {
     transactionHash?: string;
     amount?: string;
     tokenType?: string;
-    status?: "pending" | "success" | "failed";
+    status?: "pending" | "success" | "failed" | "cancelled";
     success?: boolean;
     error?: string;
     type?: string;
@@ -583,10 +648,22 @@ export interface AuditLogStats {
 export interface SendPaymentRequest {
   recipientAddress: string;
   amount: string;
-  tokenType: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  tokenType: 'XLM' | 'STRK' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
   memo?: string;
   memoType?: 'none' | 'text' | 'id' | 'hash';
   recipientContactId?: string; // Optional reference to selected contact
+  idempotencyKey?: string;
+}
+
+export interface PaymentSubmissionResult {
+  status: 'pending' | 'submitted' | 'confirmed' | 'failed';
+  transactionHash?: string;
+  transactionId?: string;
+  message?: string;
+}
+
+export interface PaymentStatusResult extends Omit<PaymentSubmissionResult, 'status'> {
+  status: PaymentSubmissionResult['status'] | 'not_found';
 }
 
 export interface SendPaymentValidationResult {
@@ -600,7 +677,8 @@ export interface ContactSelection {
   id: string;
   name: string;
   address: string;
-  tokenType: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  tokenType: 'XLM' | 'STRK' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  note?: string;
   avatar?: string;
   isFavorite?: boolean;
   lastUsed?: string;

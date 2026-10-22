@@ -2,11 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { configureStore } from '@reduxjs/toolkit';
 import chatReducer, {
   sendMessage,
+  regenerateLastResponse,
+  ABORT_ERROR,
   addMessage,
   addUserMessage,
   addSystemMessage,
   setMessages,
   updateMessage,
+  setTyping,
+  clearMessages,
+  removeMessage,
+  saveConversationLocally,
+  deleteConversationLocally,
+  setCurrentConversation,
   getMessageTimestamp,
   sortMessagesChronologically,
 } from './chatSlice';
@@ -359,5 +367,150 @@ describe('chatSlice - Message Ordering & Race Conditions (#86)', () => {
       expect(messages[0].id).toBe('a');
       expect(messages[1].id).toBe('b');
     });
+  });
+
+  describe('Abort and regenerate', () => {
+    it('resets loading flags and marks the turn cancelled without an error bubble', async () => {
+      (apiService.queryAgent as any).mockImplementation(
+        (_data: unknown, options?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => {
+              const error = Object.assign(new Error('canceled'), {
+                name: 'CanceledError',
+                code: 'ERR_CANCELED',
+              });
+              reject(error);
+            });
+          }),
+      );
+
+      const promise = store.dispatch(sendMessage({ query: 'stop me', tempId: 'abort-1' }));
+      promise.abort();
+      const result = await promise;
+
+      expect(result.payload).toBe(ABORT_ERROR);
+      const state = store.getState().chat;
+      expect(state.isLoading).toBe(false);
+      expect(state.isTyping).toBe(false);
+      expect(state.messages.some((message) => message.metadata?.status === 'cancelled')).toBe(true);
+      expect(state.messages.some((message) => message.metadata?.type === 'error')).toBe(false);
+    });
+
+    it('replaces the previous agent message without duplication', async () => {
+      store.dispatch(addMessage({
+        id: 'user-regen',
+        type: 'user',
+        content: '[Using vault tool] What is APY?',
+        timestamp: '2026-09-29T10:00:01.000Z',
+      }));
+      store.dispatch(addMessage({
+        id: 'agent-regen',
+        type: 'agent',
+        content: 'old answer',
+        timestamp: '2026-09-29T10:00:02.000Z',
+      }));
+      (apiService.queryAgent as any).mockResolvedValueOnce({
+        result: { success: true, data: 'new answer' },
+      });
+
+      await store.dispatch(regenerateLastResponse());
+
+      const agents = store.getState().chat.messages.filter((message) => message.type === 'agent');
+      expect(agents).toHaveLength(1);
+      expect(agents[0].id).toBe('agent-regen');
+      expect(agents[0].content).toBe('new answer');
+      expect(apiService.queryAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ query: '[Using vault tool] What is APY?' }),
+        expect.any(Object),
+      );
+    });
+
+    it('blocks regeneration while isTyping is true', async () => {
+      store.dispatch(setTyping(true));
+      await store.dispatch(regenerateLastResponse());
+      expect(apiService.queryAgent).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('chatSlice reducers, persistence, and error mapping', () => {
+  const memory = new Map<string, string>();
+  const localStorageMock = {
+    getItem: vi.fn((key: string) => memory.get(key) ?? null),
+    setItem: vi.fn((key: string, value: string) => {
+      memory.set(key, value);
+    }),
+    removeItem: vi.fn((key: string) => {
+      memory.delete(key);
+    }),
+    clear: vi.fn(() => memory.clear()),
+    key: vi.fn(() => null),
+    length: 0,
+  };
+
+  beforeEach(() => {
+    memory.clear();
+    vi.clearAllMocks();
+    vi.stubGlobal('localStorage', localStorageMock);
+  });
+
+  it('adds, updates, removes, and clears messages', () => {
+    const store = configureStore({
+      reducer: { chat: chatReducer, auth: authReducer },
+    });
+    store.dispatch(addMessage({ id: 'a', type: 'user', content: 'later', timestamp: '2024-01-02T00:00:00.000Z' }));
+    store.dispatch(addMessage({ id: 'b', type: 'user', content: 'earlier', timestamp: '2024-01-01T00:00:00.000Z' }));
+    expect(store.getState().chat.messages.map((item) => item.id)).toEqual(['b', 'a']);
+
+    store.dispatch(updateMessage({ id: 'b', updates: { content: 'updated' } }));
+    expect(store.getState().chat.messages.find((item) => item.id === 'b')?.content).toBe('updated');
+
+    store.dispatch(removeMessage('a'));
+    expect(store.getState().chat.messages).toHaveLength(1);
+    store.dispatch(clearMessages());
+    expect(store.getState().chat.messages).toEqual([]);
+  });
+
+  it('writes conversations through mocked storage', () => {
+    const store = configureStore({
+      reducer: { chat: chatReducer, auth: authReducer },
+    });
+    const conversation = {
+      id: 'conv-1',
+      title: 'New Chat',
+      isActive: true,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+      userId: 'user-1',
+      messageCount: 0,
+    };
+    store.dispatch(setCurrentConversation(conversation));
+    store.dispatch(addMessage({ id: 'a', type: 'user', content: 'hello', timestamp: '2024-01-01T00:00:00.000Z' }));
+    store.dispatch(saveConversationLocally(conversation));
+    expect(localStorageMock.setItem).toHaveBeenCalledWith('chat_history', expect.any(String));
+    expect(JSON.parse(memory.get('conversations') ?? '[]')[0].id).toBe('conv-1');
+
+    store.dispatch(deleteConversationLocally('conv-1'));
+    expect(JSON.parse(memory.get('conversations') ?? '[]')).toEqual([]);
+  });
+
+  it.each([
+    ['network down', "I'm having trouble connecting. Please check your internet connection and try again."],
+    ['invalid query', "I didn't understand that. Could you please rephrase your question?"],
+    ['Failed to send message', "I'm having trouble processing your request. Please try again."],
+  ])('maps %s onto one friendly error message', async (technical, friendly) => {
+    const store = configureStore({
+      reducer: { chat: chatReducer, auth: authReducer },
+      preloadedState: {
+        auth: {
+          user: { id: 'user-1', email: 'a@b.c', name: 'A', address: 'G', publicKey: 'G', isDeployed: true },
+        },
+      } as never,
+    });
+    (apiService.queryAgent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error(technical));
+    await store.dispatch(sendMessage('hello'));
+    const errors = store.getState().chat.messages.filter((item) => item.metadata?.type === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.content).toBe(friendly);
   });
 });

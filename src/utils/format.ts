@@ -1,4 +1,275 @@
-// Format utility functions for the ChenPilot client
+import { Language, getLocaleForLanguage } from '@/lib/i18n/i18n';
+
+/**
+ * Standard asset decimal precisions on Stellar and supported networks.
+ */
+export const ASSET_PRECISION: Record<string, number> = {
+  XLM: 7,
+  USDC: 7,
+  USDT: 7,
+  AQUA: 7,
+  BTC: 8,
+  ETH: 18,
+  STRK: 18,
+};
+
+export interface FormatAmountOptions {
+  locale?: string;
+  language?: Language | string;
+  decimals?: number;
+  minDecimals?: number;
+  maxDecimals?: number;
+  asset?: string;
+  trimTrailingZeros?: boolean;
+}
+
+export interface FormatFeeOptions {
+  locale?: string;
+  language?: Language | string;
+  decimals?: number;
+  asset?: string;
+  trimTrailingZeros?: boolean;
+}
+
+export interface FormatDateOptions extends Intl.DateTimeFormatOptions {
+  locale?: string;
+  language?: Language | string;
+  timeZone?: string;
+}
+
+/**
+ * Low-level exact decimal string formatter.
+ * Formats arbitrary-precision decimal strings using BigInt for integer grouping
+ * and character mappings for fractional digits, avoiding IEEE 754 floating-point loss.
+ */
+function formatExactDecimal(
+  amountStr: string,
+  locale: string,
+  targetDecimals?: number,
+  minDecimals?: number,
+  trimTrailingZeros: boolean = false
+): string {
+  const trimmed = amountStr.trim();
+  const isNegative = trimmed.startsWith('-');
+  const unsigned = trimmed.replace(/^[+-]/, '');
+
+  const [rawInt = '0', rawFrac = ''] = unsigned.split('.');
+  let cleanInt = rawInt.replace(/^0+(?=\d)/, '') || '0';
+  let cleanFrac = rawFrac;
+
+  // Exact string + BigInt rounding / truncation without binary float conversion
+  if (targetDecimals !== undefined) {
+    if (cleanFrac.length > targetDecimals) {
+      if (targetDecimals === 0) {
+        const nextDigit = parseInt(cleanFrac[0], 10);
+        if (nextDigit >= 5) {
+          cleanInt = (BigInt(cleanInt) + 1n).toString();
+        }
+        cleanFrac = '';
+      } else {
+        const nextDigit = parseInt(cleanFrac[targetDecimals], 10);
+        const truncatedFrac = cleanFrac.slice(0, targetDecimals);
+        if (nextDigit >= 5) {
+          const combined = BigInt(cleanInt + truncatedFrac) + 1n;
+          const combinedStr = combined.toString();
+          const totalDigits = cleanInt.length + targetDecimals;
+          const padded = combinedStr.padStart(totalDigits, '0');
+          cleanInt = padded.slice(0, padded.length - targetDecimals) || '0';
+          cleanFrac = padded.slice(padded.length - targetDecimals);
+        } else {
+          cleanFrac = truncatedFrac;
+        }
+      }
+    } else if (cleanFrac.length < targetDecimals && !trimTrailingZeros) {
+      cleanFrac = cleanFrac.padEnd(targetDecimals, '0');
+    }
+  }
+
+  // Handle minDecimals
+  if (minDecimals !== undefined && cleanFrac.length < minDecimals) {
+    cleanFrac = cleanFrac.padEnd(minDecimals, '0');
+  }
+
+  // Trim trailing zeros if requested
+  if (trimTrailingZeros && cleanFrac.length > 0) {
+    cleanFrac = cleanFrac.replace(/0+$/, '');
+    if (minDecimals !== undefined && cleanFrac.length < minDecimals) {
+      cleanFrac = cleanFrac.padEnd(minDecimals, '0');
+    }
+  }
+
+  // Format integer portion with BigInt and locale (handles thousands grouping)
+  let formattedInt: string;
+  try {
+    formattedInt = new Intl.NumberFormat(locale, { useGrouping: true }).format(BigInt(cleanInt));
+  } catch {
+    formattedInt = cleanInt;
+  }
+
+  // Retrieve locale's exact decimal separator and minus sign
+  let decimalSeparator = '.';
+  let minusSign = '-';
+  try {
+    const parts = new Intl.NumberFormat(locale).formatToParts(-1.1);
+    const dec = parts.find((p) => p.type === 'decimal');
+    if (dec) decimalSeparator = dec.value;
+    const min = parts.find((p) => p.type === 'minusSign');
+    if (min) minusSign = min.value;
+  } catch {
+    decimalSeparator = '.';
+  }
+
+  // Localize fractional digits for numbering systems that differ from Latin (e.g. Arabic-Indic)
+  let formattedFrac = cleanFrac;
+  try {
+    const digitMap = Array.from({ length: 10 }, (_, i) =>
+      new Intl.NumberFormat(locale).format(i)
+    );
+    formattedFrac = cleanFrac
+      .split('')
+      .map((d) => (/\d/.test(d) ? digitMap[parseInt(d, 10)] : d))
+      .join('');
+  } catch {
+    formattedFrac = cleanFrac;
+  }
+
+  let result =
+    formattedFrac.length > 0 ? `${formattedInt}${decimalSeparator}${formattedFrac}` : formattedInt;
+
+  // Avoid displaying negative zero (-0)
+  const isZero = cleanInt === '0' && cleanFrac.replace(/0/g, '').length === 0;
+  if (isNegative && !isZero) {
+    result = `${minusSign}${result}`;
+  }
+
+  return result;
+}
+
+/**
+ * Format a transaction amount using the application's locale and explicit asset precision.
+ * Preserves high precision and avoids floating-point conversion loss.
+ *
+ * @param amount - Number or decimal string representation of the amount.
+ * @param options - Locale, language, asset symbol, and precision options.
+ * @returns Formatted amount string, or '-' for missing/invalid input.
+ */
+export function formatTransactionAmount(
+  amount: string | number | null | undefined,
+  options?: FormatAmountOptions
+): string {
+  if (amount === null || amount === undefined || amount === '') {
+    return '-';
+  }
+
+  let amountStr: string;
+  if (typeof amount === 'number') {
+    if (isNaN(amount) || !isFinite(amount)) {
+      return '-';
+    }
+    amountStr = amount.toString();
+  } else {
+    amountStr = amount.trim();
+    if (!/^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(amountStr)) {
+      return '-';
+    }
+  }
+
+  const locale = getLocaleForLanguage(options?.language || options?.locale);
+
+  // Determine target precision
+  let targetDecimals = options?.decimals;
+  if (targetDecimals === undefined && options?.asset) {
+    const knownPrecision = ASSET_PRECISION[options.asset.toUpperCase()];
+    if (knownPrecision !== undefined) {
+      targetDecimals = knownPrecision;
+    }
+  }
+  if (targetDecimals === undefined && options?.maxDecimals !== undefined) {
+    targetDecimals = options.maxDecimals;
+  }
+
+  const formattedValue = formatExactDecimal(
+    amountStr,
+    locale,
+    targetDecimals,
+    options?.minDecimals,
+    options?.trimTrailingZeros ?? false
+  );
+
+  if (!options?.asset) {
+    return formattedValue;
+  }
+
+  // For Arabic locales, embed a Left-to-Right mark (\u200E) before Latin asset symbols to ensure clean bidirectional rendering
+  if (locale.startsWith('ar')) {
+    return `${formattedValue} \u200E${options.asset}`;
+  }
+
+  return `${formattedValue} ${options.asset}`;
+}
+
+/**
+ * Format a transaction fee using the application's locale and explicit asset precision.
+ * Defaults to XLM precision (7 decimals) when no specific asset is given.
+ *
+ * @param fee - Number or string representation of the fee charged.
+ * @param options - Formatting and locale options.
+ * @returns Formatted fee string.
+ */
+export function formatTransactionFee(
+  fee: string | number | null | undefined,
+  options?: FormatFeeOptions
+): string {
+  const asset = options?.asset || 'XLM';
+  const decimals = options?.decimals ?? (ASSET_PRECISION[asset.toUpperCase()] ?? 7);
+
+  return formatTransactionAmount(fee, {
+    ...options,
+    asset,
+    decimals,
+  });
+}
+
+/**
+ * Format a transaction timestamp using the application's selected locale and consistent UTC timezone.
+ *
+ * @param date - Date object, ISO 8601 string, or timestamp.
+ * @param options - Locale, language, and Intl.DateTimeFormatOptions.
+ * @returns Formatted date and time string, or '-' for missing/invalid input.
+ */
+export function formatTransactionDate(
+  date: string | Date | number | null | undefined,
+  options?: FormatDateOptions
+): string {
+  if (date === null || date === undefined || date === '') {
+    return '-';
+  }
+
+  const dateObj = typeof date === 'string' || typeof date === 'number' ? new Date(date) : date;
+  if (isNaN(dateObj.getTime())) {
+    return '-';
+  }
+
+  const locale = getLocaleForLanguage(options?.language || options?.locale);
+
+  const defaultOptions: Intl.DateTimeFormatOptions = {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: options?.timeZone || 'UTC', // Application-consistent timezone policy
+  };
+
+  const { timeZone, ...restOptions } = options || {};
+  const customOptions: Intl.DateTimeFormatOptions = restOptions;
+
+  return new Intl.DateTimeFormat(locale, {
+    ...defaultOptions,
+    ...customOptions,
+    timeZone: timeZone || 'UTC',
+  }).format(dateObj);
+}
 
 /**
  * Format a Starknet address for display
@@ -15,13 +286,32 @@ export function formatAddress(address: string, startChars: number = 6, endChars:
 }
 
 /**
- * Format a token amount for display
- * @param amount - The amount as a string
+ * Format a token amount for display.
+ * Maintained for backward compatibility with existing components and tests.
+ *
+ * @param amount - The amount as a string or number
  * @param decimals - Number of decimal places to show (default: 4)
  * @param tokenSymbol - Token symbol to append (optional)
+ * @param options - Optional locale formatting options
  * @returns Formatted amount string
  */
-export function formatTokenAmount(amount: string | number, decimals: number = 4, tokenSymbol?: string): string {
+export function formatTokenAmount(
+  amount: string | number,
+  decimals: number = 4,
+  tokenSymbol?: string,
+  options?: { locale?: string; language?: Language | string }
+): string {
+  if (options?.locale || options?.language) {
+    const formatted = formatTransactionAmount(amount, {
+      locale: options.locale,
+      language: options.language,
+      decimals,
+      trimTrailingZeros: true,
+      asset: tokenSymbol,
+    });
+    return formatted === '-' ? '0' : formatted;
+  }
+
   const numAmount = typeof amount === 'string' ? parseFloat(amount) : amount;
   
   if (isNaN(numAmount)) {
