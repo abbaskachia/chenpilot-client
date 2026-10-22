@@ -85,7 +85,7 @@ This guide covers common setup failures, environmental errors, socket disconnect
 ### Husky Hooks Not Running or Pre-Commit Failures
 
 * **Symptom**: Git commits fail with `.husky/pre-commit: line 2: eslint: command not found` or Husky hooks fail to trigger.
-* **Cause**: Git hooks were not initialized during `npm install` or binary execution permissions are missing on `.husky/pre-commit`.
+* **Cause**: Git hooks were not initialized during `pnpm install` or binary execution permissions are missing on `.husky/pre-commit`.
 * **Exact Fix Commands**:
   1. Reinstall and re-initialize Husky hooks:
      ```bash

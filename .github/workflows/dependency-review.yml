@@ -1,0 +1,40 @@
+name: Dependency Review
+
+on:
+  pull_request:
+    branches:
+      - "*"
+
+# Minimal permissions — read-only on contents and PRs for commenting
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Flags new dependencies that introduce vulnerabilities or forbidden licenses.
+      # Severity threshold: high and critical CVEs block the PR.
+      # License block-list covers copyleft licenses incompatible with a private
+      # commercial frontend (GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-2.1, LGPL-3.0).
+      # To request an exception, open a new issue with the label
+      # "dependency-exception" and get sign-off from a maintainer before merging.
+      - name: Run dependency review
+        uses: actions/dependency-review-action@ce3cf9537a52e8119d91fd484ab5b8a807627bf8 # v4.6.0
+        with:
+          fail-on-severity: high
+          deny-licenses: >-
+            GPL-2.0,
+            GPL-3.0,
+            AGPL-3.0,
+            LGPL-2.1,
+            LGPL-3.0
+          # Allow existing exceptions tracked in the repo — add PURL strings here
+          # when a license exception is formally approved.
+          allow-dependencies-licenses: ""
+          comment-summary-in-pr: always

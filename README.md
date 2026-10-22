@@ -9,8 +9,7 @@ A modern, responsive web client for **ChenPilot** - a crypto wallet management s
 ### Prerequisites
 
 - Node.js 18+
-- pnpm (recommended) or npm
-- ChenPilot Experimental Backend (see [AGENT_INTEGRATION.md](./AGENT_INTEGRATION.md))
+- pnpm
 
 ### Installation
 
@@ -29,11 +28,7 @@ A modern, responsive web client for **ChenPilot** - a crypto wallet management s
 
 3. **Set up environment variables**
 
-   ```bash
-   cp .env.example .env.local
-   ```
-
-   Update the environment variables in `.env.local`:
+   Create a `.env.local` file in the project root:
 
    ```env
    NEXT_PUBLIC_API_BASE_URL=http://localhost:2333
@@ -42,28 +37,15 @@ A modern, responsive web client for **ChenPilot** - a crypto wallet management s
    NEXT_PUBLIC_APP_VERSION=1.0.0
    ```
 
-4. **Start the experimental backend** (required for full functionality)
+   Refer to [TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md) if you encounter environment setup issues.
+
+4. **Start the development server**
 
    ```bash
-   cd ../chenpilot-experimental
-   npm install
-   npm run dev
-   ```
-
-5. **Start the development server**
-
-   ```bash
-   cd ../chenpilot-client
    pnpm dev
    ```
 
-6. **Test the integration**
-
-   ```bash
-   node test-integration.js
-   ```
-
-7. **Open your browser**
+5. **Open your browser**
    Navigate to [http://localhost:3000](http://localhost:3000)
 
 ## Available Scripts
@@ -72,9 +54,11 @@ A modern, responsive web client for **ChenPilot** - a crypto wallet management s
 - `pnpm build` - Build for production
 - `pnpm start` - Start production server
 - `pnpm lint` - Run ESLint
-- [`pnpm test`](docs/TESTING.md) - Run the Vitest suite
+- `pnpm lint:fix` - Run ESLint and fix issues automatically
+- `pnpm typecheck` - Run TypeScript type checking
+- [`pnpm test`](docs/TESTING.md) - Run the Vitest suite once
 - `pnpm test:watch` - Run Vitest in watch mode
-- `pnpm test:coverage` - Run tests and generate coverage
+- `pnpm test:coverage` - Run tests and generate coverage report
 
 ## CI/CD Pipeline
 
@@ -171,7 +155,7 @@ For guidelines on contributing code, submitting Architectural Decision Records (
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License.
 
 ## Support
 

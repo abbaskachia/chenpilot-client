@@ -7,6 +7,7 @@ import type {
   StellarOperation,
   TransactionDirection,
   TransactionLifecycleStatus,
+  AssetIdentifier,
 } from "@/types";
 import {
   formatAddress,
@@ -74,6 +75,130 @@ function normalizeAddress(address?: string | null): string {
   return address ? address.trim().toLowerCase() : "";
 }
 
+/**
+ * Resolves an asset's code, issuer, and canonical representation from operation metadata.
+ *
+ * Rules:
+ * - Native assets ('XLM' or 'native'): canonical is 'XLM', isNative is true.
+ * - Issued assets with issuer: canonical is '<CODE>:<ISSUER>', isNative is false.
+ * - Issued assets without issuer (incomplete metadata): canonical is '<CODE>', hasIncompleteMetadata is true.
+ * - Missing/empty metadata: safely falls back to native 'XLM'.
+ */
+export function resolveAssetIdentifier(
+  asset?: string | null,
+  issuer?: string | null,
+  assetType?: string | null,
+): AssetIdentifier {
+  if (assetType === "native" || asset === "native") {
+    return {
+      code: "XLM",
+      issuer: undefined,
+      isNative: true,
+      canonical: "XLM",
+      hasIncompleteMetadata: false,
+    };
+  }
+
+  // Handle canonical string format "CODE:ISSUER"
+  if (asset && asset.includes(":")) {
+    const [rawCode, ...rest] = asset.split(":");
+    const parsedIssuer = rest.join(":").trim();
+    const cleanCode = rawCode.trim().toUpperCase() || "UNKNOWN";
+
+    if (parsedIssuer) {
+      return {
+        code: cleanCode,
+        issuer: parsedIssuer,
+        isNative: false,
+        canonical: `${cleanCode}:${parsedIssuer}`,
+        hasIncompleteMetadata: false,
+      };
+    }
+
+    return {
+      code: cleanCode,
+      issuer: undefined,
+      isNative: false,
+      canonical: cleanCode,
+      hasIncompleteMetadata: true,
+    };
+  }
+
+  const cleanCode = asset ? asset.trim().toUpperCase() : "";
+  const cleanIssuer = issuer ? issuer.trim() : undefined;
+
+  // Missing or unknown asset code defaults safely to native XLM
+  if (!cleanCode) {
+    return {
+      code: "XLM",
+      issuer: undefined,
+      isNative: true,
+      canonical: "XLM",
+      hasIncompleteMetadata: false,
+    };
+  }
+
+  if (cleanCode === "XLM") {
+    return {
+      code: "XLM",
+      issuer: undefined,
+      isNative: true,
+      canonical: "XLM",
+      hasIncompleteMetadata: false,
+    };
+  }
+
+  // Non-native asset with explicit issuer
+  if (cleanIssuer) {
+    return {
+      code: cleanCode,
+      issuer: cleanIssuer,
+      isNative: false,
+      canonical: `${cleanCode}:${cleanIssuer}`,
+      hasIncompleteMetadata: false,
+    };
+  }
+
+  // Non-native asset without issuer metadata
+  return {
+    code: cleanCode,
+    issuer: undefined,
+    isNative: false,
+    canonical: cleanCode,
+    hasIncompleteMetadata: true,
+  };
+}
+
+/**
+ * Returns a display string for an asset, with optional compact issuer notation.
+ */
+export function formatAssetIdentifier(
+  asset?: string | null,
+  issuer?: string | null,
+  options?: { compact?: boolean },
+): string {
+  const info = resolveAssetIdentifier(asset, issuer);
+  if (info.isNative) {
+    return info.code;
+  }
+  if (info.issuer) {
+    if (options?.compact) {
+      return `${info.code} (${formatAddress(info.issuer, 4, 4)})`;
+    }
+    return info.canonical;
+  }
+  return `${info.code} (unverified)`;
+}
+
+/**
+ * Classifies an individual operation's direction relative to the active account address.
+ *
+ * Rules:
+ * - 'self': both source and destination match the active address.
+ * - 'incoming': destination matches active address, and source does not.
+ * - 'outgoing': source matches active address, and destination is present and does not match active address.
+ * - 'unknown': missing active address, missing operation accounts, non-transfer ops, or neither matches.
+ */
 export function getOperationDirection(
   operation?: Partial<StellarOperation> | null,
   activeAccountAddress?: string | null,
@@ -95,8 +220,8 @@ export function getOperationDirection(
 
   const rawDest =
     operation.to ||
-    (extra.account as string | undefined) ||
-    (extra.into as string | undefined);
+    operation.into ||
+    (extra.account as string | undefined);
 
   const normSource = normalizeAddress(rawSource);
   const normDest = normalizeAddress(rawDest);
@@ -105,42 +230,38 @@ export function getOperationDirection(
     return "unknown";
   }
 
-  if (normSource === normActive && normDest === normActive) {
+  if (normSource && normDest && normSource === normActive && normDest === normActive) {
     return "self";
   }
 
-  if (normDest === normActive && normSource !== normActive) {
+  if (normDest && normDest === normActive && normSource !== normActive) {
     return "incoming";
   }
 
-  if (
-    normSource === normActive &&
-    Boolean(normDest) &&
-    normDest !== normActive
-  ) {
+  if (normSource && normSource === normActive && normDest && normDest !== normActive) {
+    return "outgoing";
+  }
+
+  if (normSource && normSource === normActive && !normDest) {
     return "outgoing";
   }
 
   return "unknown";
 }
 
+/**
+ * Derives overall transaction direction based on its primary operation, falling back to transaction-level fields.
+ */
 export function getTransactionDirection(
   tx: StellarTransaction,
   activeAccountAddress?: string | null,
 ): TransactionDirection {
-  const normActive = normalizeAddress(activeAccountAddress);
-
-  if (!normActive) {
-    return tx.direction || "unknown";
-  }
-
-  if (!tx.operations || tx.operations.length === 0) {
-    return "unknown";
+  if (tx.direction) {
+    return tx.direction;
   }
 
   const primaryOp =
-    tx.operations.find((op) => op.amount || op.to || op.from) ||
-    tx.operations[0];
+    tx.operations && tx.operations.length > 0 ? tx.operations[0] : null;
 
   return getOperationDirection(
     primaryOp,
@@ -149,26 +270,46 @@ export function getTransactionDirection(
   );
 }
 
+/**
+ * Formats a transaction amount consistently with directional prefix and asset symbol/identifier.
+ * - incoming: "+<amount> <asset>"
+ * - outgoing: "-<amount> <asset>"
+ * - self: "<amount> <asset>"
+ * - unknown: "<amount> <asset>" (or "-" if amount is missing)
+ */
 export function formatTransactionAmount(
   amount?: string | number | null,
   direction: TransactionDirection = "unknown",
   asset = "XLM",
   decimals?: number,
-  options?: FormatAmountOptions,
+  options?: FormatAmountOptions & {
+    issuer?: string | null;
+    showCanonical?: boolean;
+    compactIssuer?: boolean;
+  },
 ): string {
   if (amount === undefined || amount === null || amount === "") {
     return "-";
   }
 
+  const assetInfo = resolveAssetIdentifier(asset, options?.issuer);
+
+  let assetLabel = assetInfo.code;
+  if (options?.showCanonical) {
+    assetLabel = assetInfo.canonical;
+  } else if (options?.compactIssuer && assetInfo.issuer) {
+    assetLabel = `${assetInfo.code} (${formatAddress(assetInfo.issuer, 4, 4)})`;
+  }
+
   if (options?.language || options?.locale) {
     const rawFormatted = formatLocaleAmount(amount, {
       ...options,
-      asset,
+      asset: assetLabel,
       decimals:
         decimals !== undefined
           ? decimals
-          : asset
-            ? ASSET_PRECISION[asset.toUpperCase()]
+          : assetInfo.code
+            ? ASSET_PRECISION[assetInfo.code.toUpperCase()]
             : undefined,
     });
 
@@ -191,7 +332,7 @@ export function formatTransactionAmount(
     amount,
     decimals !== undefined ? decimals : 2,
   );
-  const assetSuffix = asset ? ` ${asset}` : "";
+  const assetSuffix = assetLabel ? ` ${assetLabel}` : "";
 
   if (direction === "incoming") {
     return `+${tokenFormatted}${assetSuffix}`;
@@ -202,6 +343,56 @@ export function formatTransactionAmount(
   }
 
   return `${tokenFormatted}${assetSuffix}`;
+}
+
+/**
+ * Formats an asset amount without directional prefixes, with optional canonical/compact issuer format.
+ */
+export function formatAssetAmount(
+  amount?: string | number | null,
+  asset?: string | null,
+  issuer?: string | null,
+  decimals: number = 2,
+  options?: {
+    showCanonical?: boolean;
+    compactIssuer?: boolean;
+    language?: Language;
+    locale?: string;
+  },
+): string {
+  if (amount === undefined || amount === null || amount === "") {
+    return "-";
+  }
+
+  const assetInfo = resolveAssetIdentifier(asset, issuer);
+
+  if (options?.language || options?.locale) {
+    const formatted = formatLocaleAmount(amount, {
+      language: options.language,
+      locale: options.locale,
+      decimals: assetInfo.code
+        ? ASSET_PRECISION[assetInfo.code.toUpperCase()]
+        : decimals,
+    });
+    if (options?.showCanonical) {
+      return `${formatted} ${assetInfo.canonical}`;
+    }
+    if (options?.compactIssuer && assetInfo.issuer) {
+      return `${formatted} ${assetInfo.code} (${formatAddress(assetInfo.issuer, 4, 4)})`;
+    }
+    return `${formatted} ${assetInfo.code}`;
+  }
+
+  const formatted = formatTokenAmount(amount, decimals);
+
+  if (options?.showCanonical) {
+    return `${formatted} ${assetInfo.canonical}`;
+  }
+  if (options?.compactIssuer && assetInfo.issuer) {
+    return `${formatted} ${assetInfo.code} (${formatAddress(assetInfo.issuer, 4, 4)})`;
+  }
+
+  return `${formatted} ${assetInfo.code}`;
 }
 
 export default function TransactionTable({
@@ -358,7 +549,10 @@ export default function TransactionTable({
     return (
       <Card className="p-12">
         <div className="text-center">
-          <p className="text-gray-400">No transactions found</p>
+          <p className="mb-2 text-gray-400">No transactions found</p>
+          <p className="text-xs text-gray-500">
+            Your on-chain transaction history will appear here
+          </p>
         </div>
       </Card>
     );
@@ -393,6 +587,7 @@ export default function TransactionTable({
           </label>
         </div>
 
+        {/* Transactions Table */}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -440,19 +635,31 @@ export default function TransactionTable({
                     tx,
                     resolvedActiveAddress,
                   );
-
-                  const primaryOp =
+                  const mainOp =
                     tx.operations && tx.operations.length > 0
-                      ? tx.operations[0]
+                      ? tx.operations.find((o) => o.amount || o.to || o.from) ||
+                        tx.operations[0]
                       : null;
 
-                  const formattedAmount = formatTransactionAmount(
-                    primaryOp?.amount,
-                    direction,
-                    primaryOp?.asset || "XLM",
-                    undefined,
-                    { language: currentLanguage, locale },
+                  const assetInfo = resolveAssetIdentifier(
+                    mainOp?.asset || mainOp?.asset_code,
+                    mainOp?.asset_issuer,
+                    mainOp?.asset_type,
                   );
+
+                  const formattedAmount = mainOp?.amount
+                    ? formatTransactionAmount(
+                        mainOp.amount,
+                        direction,
+                        assetInfo.code,
+                        undefined,
+                        {
+                          language: currentLanguage,
+                          locale,
+                          issuer: assetInfo.issuer,
+                        },
+                      )
+                    : "-";
 
                   return (
                     <tr
@@ -460,7 +667,7 @@ export default function TransactionTable({
                       className="border-b border-gray-800/50 transition-colors hover:bg-gray-900/50"
                     >
                       <td className="px-4 py-3">
-                        <div className="flex items-center space-x-2">
+                        <div className="flex items-center space-x-3">
                           <div
                             className={`rounded-full p-2 ${getDirectionContainerClass(
                               direction,
@@ -468,7 +675,11 @@ export default function TransactionTable({
                               tx.status,
                             )}`}
                           >
-                            {getDirectionIcon(direction, tx.successful, tx.status)}
+                            {getDirectionIcon(
+                              direction,
+                              tx.successful,
+                              tx.status,
+                            )}
                           </div>
                           <div>
                             <p className="font-medium text-white">
@@ -511,31 +722,51 @@ export default function TransactionTable({
                       </td>
 
                       <td className="px-4 py-3">
-                        <span
-                          data-testid={`tx-amount-${tx.id}`}
-                          className={`block font-mono text-sm ${
-                            direction === "incoming"
-                              ? "font-medium text-emerald-400"
-                              : direction === "outgoing"
-                                ? "font-medium text-rose-400"
-                                : direction === "self"
-                                  ? "font-medium text-purple-300"
-                                  : "text-gray-300"
-                          }`}
-                        >
-                          {formattedAmount}
-                        </span>
-
-                        {tx.fee_charged && (
-                          <span className="block text-xs text-gray-500">
-                            Fee:{" "}
-                            {formatTransactionFee(tx.fee_charged, {
-                              language: currentLanguage,
-                              locale,
-                              asset: "XLM",
-                            })}
+                        <div className="flex flex-col items-start space-y-0.5">
+                          <span
+                            data-testid={`tx-amount-${tx.id}`}
+                            className={`block font-mono text-sm ${
+                              direction === "incoming"
+                                ? "font-medium text-emerald-400"
+                                : direction === "outgoing"
+                                  ? "font-medium text-rose-400"
+                                  : direction === "self"
+                                    ? "font-medium text-purple-300"
+                                    : "text-gray-300"
+                            }`}
+                          >
+                            {formattedAmount}
                           </span>
-                        )}
+                          {assetInfo.issuer ? (
+                            <span
+                              data-testid={`tx-asset-issuer-${tx.id}`}
+                              className="inline-flex cursor-pointer items-center gap-1 font-mono text-[11px] text-gray-400 hover:text-gray-300"
+                              title={`Canonical Asset: ${assetInfo.canonical}`}
+                            >
+                              <span className="text-gray-500">issuer:</span>
+                              <span>{formatAddress(assetInfo.issuer, 4, 4)}</span>
+                            </span>
+                          ) : assetInfo.hasIncompleteMetadata ? (
+                            <span
+                              data-testid={`tx-asset-fallback-${tx.id}`}
+                              className="inline-flex items-center gap-1 text-[11px] text-amber-400/90"
+                              title="Asset issuer metadata is missing or unverified"
+                            >
+                              <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400"></span>
+                              <span>unverified issuer</span>
+                            </span>
+                          ) : null}
+                          {tx.fee_charged && (
+                            <span className="block text-xs text-gray-500">
+                              Fee:{" "}
+                              {formatTransactionFee(tx.fee_charged, {
+                                language: currentLanguage,
+                                locale,
+                                asset: "XLM",
+                              })}
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       <td className="px-4 py-3">
@@ -604,7 +835,10 @@ export default function TransactionTable({
             </span>
 
             <div className="flex items-center space-x-2">
-              <label htmlFor="transaction-page-size" className="text-sm text-gray-300">
+              <label
+                htmlFor="transaction-page-size"
+                className="text-sm text-gray-300"
+              >
                 Per page:
               </label>
               <select

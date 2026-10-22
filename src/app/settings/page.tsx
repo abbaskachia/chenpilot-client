@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { t, LANGUAGES } from "@/lib/i18n/i18n";
+import { TrustlinesPanel } from "@/components/dashboard/TrustlinesPanel";
 import { MfaSettingsSection } from "@/components/settings/MfaSettingsSection";
 import { DangerZone } from "@/components/settings/DangerZone";
 import apiService from "@/services/api";
@@ -20,11 +21,12 @@ import { changePasswordSchema } from "@/utils/validation";
 
 export default function SettingsPage() {
   const dispatch = useAppDispatch();
+
   const { isAuthenticated, user, isLoading } = useAppSelector(
-    (state) => state.auth,
+    (state) => state.auth
   );
   const { theme, language } = useAppSelector((state) => state.ui) || {
-    mode: "dark",
+    theme: { mode: "dark" },
     language: "en",
   };
   const [passwordChangeStage, setPasswordChangeStage] = useState<
@@ -48,17 +50,6 @@ export default function SettingsPage() {
     authService.clearRecentAuthentication();
     return () => authService.clearRecentAuthentication();
   }, [isAuthenticated]);
-
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600 dark:text-gray-400">Loading...</p>
-        </div>
-      </div>
-    );
-  }
 
   const avatarInitials = user?.name
     ? user.name
@@ -144,44 +135,70 @@ export default function SettingsPage() {
 
   const handleDeleteAccount = async () => {
     if (isDeleting) return;
+
     setIsDeleting(true);
+    setDeletionStatus(null);
+
     try {
       const result = await apiService.deleteAccount();
+
       const remaining = result.remaining.length
         ? ` Remaining: ${result.remaining.join(", ")}.`
         : "";
+
       const removed = result.removed.length
         ? ` Removed: ${result.removed.join(", ")}.`
         : "";
+
       if (!result.api) {
-        setDeletionStatus(`API deletion failed.${removed}${remaining} On-chain history cannot be deleted.`);
-      } else if (result.remaining.length) {
-        setDeletionStatus(`Account deletion partially completed.${removed}${remaining} On-chain history cannot be deleted.`);
+        setDeletionStatus(
+          `API deletion failed.${removed}${remaining} On-chain history cannot be deleted.`
+        );
+      } else if (result.remaining.length > 0) {
+        setDeletionStatus(
+          `Account deletion partially completed.${removed}${remaining} On-chain history cannot be deleted.`
+        );
       } else {
-        setDeletionStatus("Account deleted. On-chain history cannot be deleted.");
+        setDeletionStatus(
+          "Account deleted. On-chain history cannot be deleted."
+        );
+
         await dispatch(logout());
       }
-    } catch (error) {
+    } catch (error: unknown) {
       setDeletionStatus(
-        error instanceof Error ? error.message : "Account deletion failed.",
+        error instanceof Error ? error.message : "Account deletion failed."
       );
     } finally {
       setIsDeleting(false);
     }
   };
 
+  if (!isAuthenticated) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="text-center">
+          <div className="mx-auto h-32 w-32 animate-spin rounded-full border-b-2 border-primary-600" />
+          <p className="mt-4 text-gray-600 dark:text-gray-400">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <ChatLayout>
-      <div className="h-full flex flex-col bg-black text-white overflow-hidden relative">
+      <div className="relative flex h-full flex-col overflow-hidden bg-black text-white">
         <div className="absolute inset-0">
           <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:50px_50px]" />
         </div>
-        <div className="flex-1 overflow-auto relative z-10">
-          <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+
+        <div className="relative z-10 flex-1 overflow-auto">
+          <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
             <div className="mb-6">
-              <h1 className="text-2xl font-bold text-white mb-2">
+              <h1 className="mb-2 text-2xl font-bold text-white">
                 {t(language, "settings.title")}
               </h1>
+
               <p className="text-gray-300">
                 {t(language, "settings.description")}
               </p>
@@ -191,35 +208,40 @@ export default function SettingsPage() {
               {/* Profile Settings */}
               <Card>
                 <div className="p-6">
-                  <h3 className="text-lg font-medium text-white mb-4">
+                  <h3 className="mb-4 text-lg font-medium text-white">
                     {t(language, "settings.profile")}
                   </h3>
+
                   {isLoading ? (
-                    <div className="flex items-center space-x-3 mb-4">
-                      <div className="animate-pulse h-16 w-16 rounded-full bg-gray-700" />
+                    <div className="mb-4 flex items-center space-x-3">
+                      <div className="h-16 w-16 animate-pulse rounded-full bg-gray-700" />
                       <div className="space-y-2">
-                        <div className="animate-pulse h-4 w-32 bg-gray-700 rounded" />
-                        <div className="animate-pulse h-3 w-48 bg-gray-700 rounded" />
+                        <div className="h-4 w-32 animate-pulse rounded bg-gray-700" />
+                        <div className="h-3 w-48 animate-pulse rounded bg-gray-700" />
                       </div>
                     </div>
                   ) : (
-                    <div className="flex items-center space-x-4 mb-6">
-                      <div className="h-16 w-16 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xl font-bold flex-shrink-0">
+                    <div className="mb-6 flex items-center space-x-4">
+                      <div className="flex h-16 w-16 flex-shrink-0 items-center justify-center rounded-full bg-indigo-600 text-xl font-bold text-white">
                         {avatarInitials}
                       </div>
+
                       <div>
-                        <p className="text-white font-medium">
+                        <p className="font-medium text-white">
                           {user?.name || "—"}
                         </p>
-                        <p className="text-gray-400 text-sm">
+
+                        <p className="text-sm text-gray-400">
                           {user?.email || "—"}
                         </p>
-                        <span className="inline-block mt-1 text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-300 capitalize">
+
+                        <span className="mt-1 inline-block rounded-full bg-gray-800 px-2 py-0.5 text-xs capitalize text-gray-300">
                           {user?.authProvider ?? "email"}
                         </span>
                       </div>
                     </div>
                   )}
+
                   <div className="space-y-4">
                     <Input
                       label="Name"
@@ -227,17 +249,23 @@ export default function SettingsPage() {
                       disabled
                       placeholder="Your display name"
                     />
+
                     <Input
                       label="Email"
                       value={user?.email || ""}
                       disabled
                       placeholder="Your email address"
                     />
+
                     <div className="space-y-2">
                       <div className="flex items-center justify-between gap-3">
-                        <span className="text-sm font-medium text-gray-300">Wallet Address</span>
+                        <span className="text-sm font-medium text-gray-300">
+                          Wallet Address
+                        </span>
+
                         <StellarNetworkBadge />
                       </div>
+
                       <Input
                         value={user?.address || ""}
                         disabled
@@ -252,22 +280,25 @@ export default function SettingsPage() {
               {/* Appearance Settings */}
               <Card>
                 <div className="p-6">
-                  <h3 className="text-lg font-medium text-white mb-4">
+                  <h3 className="mb-4 text-lg font-medium text-white">
                     {t(language, "settings.appearance")}
                   </h3>
+
                   <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                    <label className="mb-2 block text-sm font-medium text-gray-300">
                       {t(language, "settings.theme")}
                     </label>
+
                     <div className="flex space-x-4">
                       <Button
-                        variant={theme.mode === "light" ? "primary" : "ghost"}
+                        variant={theme?.mode === "light" ? "primary" : "ghost"}
                         size="sm"
                       >
                         {t(language, "settings.light")}
                       </Button>
+
                       <Button
-                        variant={theme.mode === "dark" ? "primary" : "ghost"}
+                        variant={theme?.mode === "dark" ? "primary" : "ghost"}
                         size="sm"
                       >
                         {t(language, "settings.dark")}
@@ -280,9 +311,10 @@ export default function SettingsPage() {
               {/* Language Settings */}
               <Card>
                 <div className="p-6">
-                  <h3 className="text-lg font-medium text-white mb-4">
+                  <h3 className="mb-4 text-lg font-medium text-white">
                     {t(language, "settings.language")}
                   </h3>
+
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     {LANGUAGES.map((lang) => (
                       <Button
@@ -291,7 +323,7 @@ export default function SettingsPage() {
                         size="sm"
                         onClick={() =>
                           handleLanguageChange(
-                            lang.code as "en" | "ar" | "es" | "fr",
+                            lang.code as "en" | "ar" | "es" | "fr"
                           )
                         }
                         className="w-full"
@@ -303,12 +335,16 @@ export default function SettingsPage() {
                 </div>
               </Card>
 
+              {/* Stellar Trustlines Management */}
+              <TrustlinesPanel />
+
               {/* Notifications */}
               <Card>
                 <div className="p-6">
-                  <h3 className="text-lg font-medium text-white mb-4">
+                  <h3 className="mb-4 text-lg font-medium text-white">
                     {t(language, "settings.notifications")}
                   </h3>
+
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
                       <div>
@@ -319,12 +355,15 @@ export default function SettingsPage() {
                           Get notified when transactions complete
                         </p>
                       </div>
+
                       <input
                         type="checkbox"
                         defaultChecked
-                        className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                        aria-label="Transaction Notifications"
+                        className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                       />
                     </div>
+
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-sm font-medium text-white">
@@ -334,10 +373,12 @@ export default function SettingsPage() {
                           Get notified of new AI agent responses
                         </p>
                       </div>
+
                       <input
                         type="checkbox"
                         defaultChecked
-                        className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                        aria-label="Chat Notifications"
+                        className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                       />
                     </div>
                   </div>
@@ -347,9 +388,10 @@ export default function SettingsPage() {
               {/* Security */}
               <Card>
                 <div className="p-6">
-                  <h3 className="text-lg font-medium text-white mb-4">
+                  <h3 className="mb-4 text-lg font-medium text-white">
                     {t(language, "settings.security")}
                   </h3>
+
                   <div className="space-y-4">
                     <MfaSettingsSection
                       authProvider={user?.authProvider}
@@ -390,9 +432,12 @@ export default function SettingsPage() {
                       disabled={isDeleting}
                       onDelete={handleDeleteAccount}
                     />
-                    {deletionStatus ? (
-                      <p className="text-sm text-amber-400">{deletionStatus}</p>
-                    ) : null}
+
+                    {deletionStatus && (
+                      <p role="status" className="text-sm text-amber-400">
+                        {deletionStatus}
+                      </p>
+                    )}
                   </div>
                 </div>
               </Card>

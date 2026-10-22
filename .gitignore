@@ -32,6 +32,13 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# lockfiles for other package managers (pnpm is the supported manager)
+package-lock.json
+yarn.lock
+
+# stale install logs
+npm-install.log
+
 # env files (can opt-in for committing if needed)
 .env*
 

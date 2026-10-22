@@ -1,0 +1,32 @@
+version: 2
+updates:
+  # Keep GitHub Actions pinned to reviewed SHAs.
+  # Dependabot opens a PR for each new action release, updating both the SHA
+  # and the trailing version comment. Review, verify the changelog, then merge.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+      - "github-actions"
+
+  # Keep npm/pnpm dependencies up to date.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "deps"
+    labels:
+      - "dependencies"
+    # Group all non-major updates into a single PR to reduce noise.
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"

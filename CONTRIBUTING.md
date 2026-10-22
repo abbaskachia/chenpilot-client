@@ -27,8 +27,20 @@ You MUST submit a new ADR PR when proposing or implementing:
 ## Development Workflow
 
 1. **Branching**: Create a feature branch off main/build (e.g., `feat/my-feature` or `fix/issue-description`).
-2. **Code Style & Linting**: Run `npm run lint` before committing code changes. Ensure TypeScript types are exact.
-3. **Testing**: Run `npm run test` to verify unit and integration tests pass.
+2. **Code Style & Linting**: Run `pnpm lint` before committing code changes. Ensure TypeScript types are exact.
+3. **Testing**: Run `pnpm test` to verify unit and integration tests pass.
+
+---
+
+## Quality Checklist for User-Impacting Changes
+
+When submitting PRs that affect user-facing functionality, ensure the following:
+
+- **Transaction Safety**: Async operations handle errors gracefully; state updates are atomic to prevent data loss.
+- **Data Persistence**: Any changes to stored data are tested and backward-compatible.
+- **API Compatibility**: Document backend API contract requirements in `docs/API_CONTRACT.md`. Include secret handling notes if credentials are involved.
+- **Accessibility**: UI changes are tested with keyboard navigation and screen readers per WCAG guidelines.
+- **Tests**: Add or update tests for all behavior changes; documentation-only changes are exempt.
 
 # Contributing to Chenpilot Client
 

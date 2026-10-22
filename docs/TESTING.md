@@ -4,6 +4,8 @@ This project uses Vitest with `jsdom` and Testing Library. The configuration is 
 
 ## Commands
 
+This project uses **pnpm** exclusively. Do not use `npm` or `yarn` — `package-lock.json` and `yarn.lock` are gitignored to prevent accidental lockfile drift. The `packageManager` field in `package.json` declares the supported version and enables Corepack enforcement.
+
 Run the full suite once:
 
 ```bash
@@ -89,3 +91,77 @@ describe('EmptyState', () => {
 ```
 
 Run either example directly with `pnpm test -- <path-to-test>` or run all tests with `pnpm test`.
+
+## Dependency Security Gate
+
+Two automated checks guard the dependency tree.
+
+### pnpm audit (CI)
+
+The `ci` job in `.github/workflows/vercel.yml` runs `pnpm audit --audit-level=high --prod` after installing dependencies. Any vulnerability rated **high** or **critical** in production dependencies fails the build immediately. `moderate` and `low` findings are logged but do not block merging.
+
+Run it locally before opening a PR:
+
+```bash
+pnpm audit          # high+critical prod deps (mirrors CI)
+pnpm audit:full     # all severities, all deps
+```
+
+### Dependency Review (PRs only)
+
+`.github/workflows/dependency-review.yml` uses `actions/dependency-review-action@v4` on every pull request. It checks:
+
+- New or updated packages against the GitHub Advisory Database for **high** and **critical** CVEs.
+- Introduced licenses against a deny-list: `GPL-2.0`, `GPL-3.0`, `AGPL-3.0`, `LGPL-2.1`, `LGPL-3.0`.
+
+Results are posted as a PR comment summary automatically.
+
+### Exception Process
+
+If a flagged advisory or license cannot be remediated immediately:
+
+1. Open an issue with the label **`dependency-exception`** describing the package, the advisory/license, and the risk assessment.
+2. Get explicit sign-off (approval comment) from a maintainer.
+3. Add the advisory GHSA identifier as an `.npmrc` `audit-exceptions[]` entry, or the PURL to the `allow-dependencies-licenses` list in `dependency-review.yml`.
+4. Record the rationale in `docs/SECURITY_EXCEPTIONS.md` (create the file if it does not exist).
+
+No credentials or secret values appear in audit output. The audit commands only access advisory metadata from the pnpm registry.
+
+## GitHub Actions SHA Pinning
+
+All third-party actions in `.github/workflows/` are pinned to immutable 40-character commit SHAs rather than mutable version tags. A trailing comment on each `uses:` line records the human-readable version for auditability:
+
+```yaml
+uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+```
+
+This prevents a compromised or force-pushed upstream tag from silently changing the code that runs in CI (supply-chain attack surface documented in [SLSA](https://slsa.dev/)).
+
+### Pinned actions and current versions
+
+| Action | Pinned version | SHA |
+|---|---|---|
+| `actions/checkout` | v4.2.2 | `11bd71901bbe5b1630ceea73d27597364c9af683` |
+| `actions/setup-node` | v4.4.0 | `49933ea5288caeca8642d1e84afbd3f7d6820020` |
+| `pnpm/action-setup` | v4.0.0 | `fe02b34f77f8bc703788d5817da081398fad5dd2` |
+| `actions/cache` | v4.2.3 | `5a3ec84eff668545956fd18022155c47e93e2684` |
+| `actions/upload-artifact` | v4.6.2 | `ea165f8d65b6e75b540449e92b4886f43607fa02` |
+| `actions/github-script` | v7.0.1 | `60a0d83039c74a4aee543508d2ffcb1c3799cdea` |
+| `actions/dependency-review-action` | v4.6.0 | `ce3cf9537a52e8119d91fd484ab5b8a807627bf8` |
+
+### Automated update mechanism
+
+`.github/dependabot.yml` opens a weekly PR every Monday for any new action release. Dependabot updates both the SHA and the version comment in a single commit. The review process is:
+
+1. Dependabot opens a PR with the new SHA and a link to the upstream release.
+2. A maintainer reviews the release notes and verifies the changelog contains no unexpected changes.
+3. The PR is merged after approval — the existing CI and dependency-review gates run against it automatically.
+
+To verify a SHA manually before merging, resolve the tag via the GitHub API:
+
+```bash
+curl -s https://api.github.com/repos/<owner>/<repo>/git/ref/tags/<tag> \
+  | jq .object.sha
+```
+
+For annotated tags, follow the returned object URL one level deeper (type `tag` → dereference to the `commit` SHA).

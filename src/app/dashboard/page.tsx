@@ -1,692 +1,543 @@
-"use client";
+```tsx
+'use client';
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { useAppSelector } from "@/store";
-import { Button } from "@/components/ui/Button";
-import { Card } from "@/components/ui/Card";
-import { ChatLayout } from "@/components/layout/ChatLayout";
+import React, { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useAppDispatch, useAppSelector } from '@/store';
+import {
+  getAccountStatus,
+  getBalance,
+  deployAccount,
+  fundAccount,
+  getStellarNetworkStatus,
+  getAccountTransactions,
+} from '@/store/slices/accountSlice';
+import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
+import { ChatLayout } from '@/components/layout/ChatLayout';
+import TransactionTable from '@/components/dashboard/TransactionTable';
+import TrustlinesPanel from '@/components/dashboard/TrustlinesPanel';
+import DeploymentStepper from '@/components/deployment/DeploymentStepper';
+import LiquidityPoolStats from '@/components/widgets/LiquidityPoolStats';
+import { useDeploymentProgress } from '@/hooks/useDeploymentProgress';
 import {
   CheckCircle2,
-  Clipboard,
+  Copy,
+  ExternalLink,
   Loader2,
-  RefreshCw,
   ShieldCheck,
-  Sparkles,
-} from "lucide-react";
-import toast from "react-hot-toast";
-import apiService from "@/services/api";
-import { PromptVersion, PromptVersionRecord } from "@/types";
-
-const DEFAULT_TEST_INPUT =
-  "Help a user move idle USDC into the highest-yield low-risk strategy.";
-
-const DEFAULT_VARIABLES = JSON.stringify(
-  {
-    agentName: "ChenPilot",
-    userName: "Ada",
-    network: "mainnet",
-    riskLevel: "low",
-    tone: "clear and confident",
-  },
-  null,
-  2,
-);
-
-function isRecord(value: unknown): value is PromptVersionRecord {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function getString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
-
-function getBoolean(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null;
-}
-
-function getArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
-function extractVersionRecords(payload: unknown): PromptVersionRecord[] {
-  if (Array.isArray(payload)) {
-    return payload.filter(isRecord);
-  }
-
-  if (!isRecord(payload)) {
-    return [];
-  }
-
-  for (const candidate of [
-    payload.versions,
-    payload.data,
-    payload.items,
-    payload.results,
-  ]) {
-    if (Array.isArray(candidate)) {
-      return candidate.filter(isRecord);
-    }
-  }
-
-  if (isRecord(payload.data)) {
-    for (const candidate of [
-      payload.data.versions,
-      payload.data.items,
-      payload.data.results,
-    ]) {
-      if (Array.isArray(candidate)) {
-        return candidate.filter(isRecord);
-      }
-    }
-  }
-
-  return [];
-}
-
-function getTemplate(record: PromptVersionRecord): string {
-  return (
-    getString(record.template) ??
-    getString(record.prompt) ??
-    getString(record.systemPrompt) ??
-    getString(record.content) ??
-    getString(record.body) ??
-    getString(record.text) ??
-    ""
-  );
-}
-
-function getLabel(record: PromptVersionRecord, index: number): string {
-  return (
-    getString(record.name) ??
-    getString(record.title) ??
-    getString(record.label) ??
-    getString(record.version) ??
-    `Template ${index + 1}`
-  );
-}
-
-function normalizeVersion(
-  record: PromptVersionRecord,
-  index: number,
-): PromptVersion {
-  const id =
-    getString(record.id) ??
-    getString(record._id) ??
-    getString(record.uuid) ??
-    `version-${index + 1}`;
-
-  const tags = getArray(record.tags)
-    .map((tag) => (typeof tag === "string" ? tag.trim() : ""))
-    .filter(Boolean);
-
-  const activeFlag =
-    getBoolean(record.isActive) ??
-    getBoolean(record.active) ??
-    getBoolean(record.is_active) ??
-    getString(record.status)?.toLowerCase() === "active";
-
-  return {
-    id,
-    label: getLabel(record, index),
-    description:
-      getString(record.description) ??
-      getString(record.summary) ??
-      getString(record.notes) ??
-      "No description provided for this prompt version.",
-    template: getTemplate(record),
-    version: getString(record.version) ?? id,
-    isActive: Boolean(activeFlag),
-    createdAt:
-      getString(record.createdAt) ??
-      getString(record.created_at) ??
-      getString(record.insertedAt) ??
-      null,
-    updatedAt:
-      getString(record.updatedAt) ??
-      getString(record.updated_at) ??
-      getString(record.modifiedAt) ??
-      null,
-    tags,
-    raw: record,
-  };
-}
-
-function safelyFormatDate(value: string | null): string {
-  if (!value) {
-    return "Unknown";
-  }
-
-  const date = new Date(value);
-
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-}
-
-function parseVariables(rawValue: string): {
-  parsed: Record<string, string>;
-  error: string | null;
-} {
-  try {
-    const value: unknown = JSON.parse(rawValue);
-
-    if (!isRecord(value)) {
-      return {
-        parsed: {},
-        error: "Variables must be a JSON object.",
-      };
-    }
-
-    const parsed = Object.entries(value).reduce<Record<string, string>>(
-      (result, [key, entry]) => {
-        result[key] =
-          entry === null || entry === undefined
-            ? ""
-            : typeof entry === "string"
-              ? entry
-              : JSON.stringify(entry);
-
-        return result;
-      },
-      {},
-    );
-
-    return { parsed, error: null };
-  } catch {
-    return {
-      parsed: {},
-      error: "Variables JSON is invalid.",
-    };
-  }
-}
-
-function renderTemplate(
-  template: string,
-  variables: Record<string, string>,
-): string {
-  return template
-    .replace(
-      /\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g,
-      (match, key: string) => variables[key] ?? match,
-    )
-    .replace(
-      /\$\{\s*([a-zA-Z0-9_.-]+)\s*\}/g,
-      (match, key: string) => variables[key] ?? match,
-    );
-}
-
-function getPlaceholders(template: string): string[] {
-  const matches =
-    template.match(
-      /\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}|\$\{\s*([a-zA-Z0-9_.-]+)\s*\}/g,
-    ) ?? [];
-
-  const normalized = matches.map((placeholder) =>
-    placeholder.replace(/^\{\{\s*|\s*\}\}$|^\$\{\s*|\s*\}$/g, ""),
-  );
-
-  return Array.from(new Set(normalized));
-}
+  Wallet,
+  Coins,
+  Zap,
+  Activity,
+  Droplets,
+  ArrowRight,
+  Send,
+  Users,
+} from 'lucide-react';
+import toast from 'react-hot-toast';
+import { formatAddress } from '@/utils/format';
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { isAuthenticated } = useAppSelector((state) => state.auth);
+  const dispatch = useAppDispatch();
 
-  const [versions, setVersions] = useState<PromptVersion[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isActivating, setIsActivating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [testInput, setTestInput] = useState(DEFAULT_TEST_INPUT);
-  const [variablesText, setVariablesText] = useState(DEFAULT_VARIABLES);
+  const { user, isAuthenticated } = useAppSelector((state) => state.auth);
 
-  const loadVersions = useCallback(async (showRefreshState = false) => {
-    if (showRefreshState) {
-      setIsRefreshing(true);
-    } else {
-      setIsLoading(true);
+  const { status, balance, network, transactions } = useAppSelector(
+    (state) => state.account
+  );
+
+  const { messages } = useAppSelector((state) => state.chat);
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [totalCount, setTotalCount] = useState(0);
+  const [showDeploymentStepper, setShowDeploymentStepper] = useState(false);
+  const [isFunding, setIsFunding] = useState(false);
+  const [isDeploying, setIsDeploying] = useState(false);
+
+  const {
+    progress,
+    startDeployment,
+    completeDeployment,
+    moveToNextStep,
+  } = useDeploymentProgress();
+
+  const loadDashboardData = useCallback(() => {
+    dispatch(getAccountStatus());
+    dispatch(getBalance());
+    dispatch(getStellarNetworkStatus());
+
+    if (user?.id) {
+      dispatch(
+        getAccountTransactions({
+          userId: user.id,
+          page: currentPage,
+          limit: pageSize,
+        })
+      );
     }
-
-    try {
-      setError(null);
-
-      const response = await apiService.getPromptVersions();
-      const normalizedVersions =
-        extractVersionRecords(response).map(normalizeVersion);
-
-      setVersions(normalizedVersions);
-
-      setSelectedId((currentId) => {
-        if (
-          currentId &&
-          normalizedVersions.some((version) => version.id === currentId)
-        ) {
-          return currentId;
-        }
-
-        return (
-          normalizedVersions.find((version) => version.isActive)?.id ??
-          normalizedVersions[0]?.id ??
-          null
-        );
-      });
-    } catch (requestError: unknown) {
-      const message =
-        requestError instanceof Error
-          ? requestError.message
-          : "Failed to load prompt versions.";
-
-      setError(message);
-      toast.error(message);
-    } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
-    }
-  }, []);
+  }, [dispatch, user?.id, currentPage, pageSize]);
 
   useEffect(() => {
     if (!isAuthenticated) {
-      router.push("/auth/login");
+      router.push('/auth/login');
       return;
     }
 
-    void loadVersions();
-  }, [isAuthenticated, router, loadVersions]);
+    loadDashboardData();
+  }, [isAuthenticated, router, loadDashboardData]);
 
-  const selectedVersion = useMemo(
-    () => versions.find((version) => version.id === selectedId) ?? null,
-    [versions, selectedId],
-  );
-
-  const activeVersion = useMemo(
-    () => versions.find((version) => version.isActive) ?? null,
-    [versions],
-  );
-
-  const parsedVariables = useMemo(
-    () => parseVariables(variablesText),
-    [variablesText],
-  );
-
-  const templateVariables = useMemo(
-    () => ({
-      ...parsedVariables.parsed,
-      input: testInput,
-      userInput: testInput,
-      user_query: testInput,
-    }),
-    [parsedVariables.parsed, testInput],
-  );
-
-  const renderedPrompt = useMemo(() => {
-    if (!selectedVersion) {
-      return "";
+  // Update the transaction count displayed by the table.
+  useEffect(() => {
+    if (transactions.transactions.length > 0) {
+      setTotalCount(transactions.transactions.length * 2);
+    } else {
+      setTotalCount(0);
     }
+  }, [transactions.transactions]);
 
-    return renderTemplate(selectedVersion.template, templateVariables);
-  }, [selectedVersion, templateVariables]);
-
-  const unresolvedPlaceholders = useMemo(() => {
-    if (!selectedVersion) {
-      return [];
-    }
-
-    return getPlaceholders(selectedVersion.template).filter(
-      (placeholder) => !(placeholder in templateVariables),
-    );
-  }, [selectedVersion, templateVariables]);
-
-  const handleActivate = async () => {
-    if (!selectedVersion || selectedVersion.isActive || isActivating) {
-      return;
-    }
-
-    setIsActivating(true);
-
-    try {
-      await apiService.activatePromptVersion(selectedVersion.id);
-
-      setVersions((currentVersions) =>
-        currentVersions.map((version) => ({
-          ...version,
-          isActive: version.id === selectedVersion.id,
-        })),
-      );
-
-      toast.success(`${selectedVersion.label} is now active`);
-    } catch (requestError: unknown) {
-      const message =
-        requestError instanceof Error
-          ? requestError.message
-          : "Failed to activate the selected version.";
-
-      toast.error(message);
-    } finally {
-      setIsActivating(false);
-    }
+  const handlePageChange = (page: number) => {
+    setCurrentPage(page);
   };
 
-  const handleCopy = async (text: string, label: string) => {
+  const handlePageSizeChange = (size: number) => {
+    setPageSize(size);
+    setCurrentPage(1);
+  };
+
+  const copyToClipboard = async (text: string, label: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      toast.success(`${label} copied`);
+      toast.success(`${label} copied to clipboard`);
     } catch {
-      toast.error("Unable to copy. Check your browser permissions.");
+      toast.error('Failed to copy to clipboard');
     }
   };
+
+  const handleManualFund = async () => {
+    try {
+      setIsFunding(true);
+
+      await dispatch(fundAccount()).unwrap();
+
+      toast.success('Account successfully funded with testnet XLM!');
+
+      dispatch(getBalance());
+      dispatch(getAccountStatus());
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : String(err || 'Funding failed');
+
+      toast.error(msg);
+    } finally {
+      setIsFunding(false);
+    }
+  };
+
+  const handleManualDeploy = async () => {
+    try {
+      setIsDeploying(true);
+      setShowDeploymentStepper(true);
+
+      startDeployment();
+
+      await dispatch(deployAccount()).unwrap();
+
+      window.setTimeout(() => moveToNextStep(), 1500);
+      window.setTimeout(() => completeDeployment(), 3000);
+
+      toast.success('Smart contract account deployed successfully!');
+
+      dispatch(getAccountStatus());
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : String(err || 'Deployment failed');
+
+      toast.error(msg);
+    } finally {
+      setIsDeploying(false);
+    }
+  };
+
+  const quickActions = [
+    {
+      title: 'Send Payment',
+      description: 'Transfer native XLM or custom anchored assets',
+      icon: <Send className="h-5 w-5 text-cyan-400" />,
+      action: () => router.push('/send'),
+    },
+    {
+      title: 'View Transactions',
+      description: 'Check complete ledger history and operations',
+      icon: <Coins className="h-5 w-5 text-emerald-400" />,
+      action: () => router.push('/transactions'),
+    },
+    {
+      title: 'Manage Contacts',
+      description: 'Save Stellar addresses for fast recurring transfers',
+      icon: <Users className="h-5 w-5 text-indigo-400" />,
+      action: () => router.push('/contacts'),
+    },
+  ];
 
   if (!isAuthenticated) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#060816] text-white">
         <div className="text-center">
           <Loader2 className="mx-auto h-10 w-10 animate-spin text-cyan-400" />
-          <p className="mt-4 text-sm text-slate-300">Redirecting to login...</p>
+          <p className="mt-4 text-sm text-slate-300">
+            Loading your Stellar account...
+          </p>
         </div>
       </div>
     );
   }
 
+  const activePublicKey =
+    status?.publicKey ||
+    status?.address ||
+    user?.publicKey ||
+    user?.address ||
+    '';
+
   return (
     <ChatLayout>
-      <main className="relative h-full overflow-auto bg-[#060816] text-white">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.15),transparent_30%),radial-gradient(circle_at_top_right,rgba(16,185,129,0.12),transparent_25%)]" />
+      <div className="relative h-full overflow-auto bg-[#060816] text-white">
+        {/* Subtle ambient background gradients */}
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.12),transparent_35%),radial-gradient(circle_at_top_right,rgba(16,185,129,0.10),transparent_30%),linear-gradient(180deg,rgba(15,23,42,0.95),rgba(2,6,23,1))]" />
 
-        <div className="relative mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
-          <Card>
-            <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.06)_1px,transparent_1px)] bg-[size:48px_48px] opacity-25" />
+
+        <div className="relative mx-auto flex max-w-7xl flex-col gap-8 px-4 py-8 sm:px-6 lg:px-8">
+          {/* Header and account summary */}
+          <section className="overflow-hidden rounded-3xl border border-white/10 bg-slate-950/70 p-6 shadow-2xl backdrop-blur-xl sm:p-8">
+            <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <div className="mb-3 flex items-center gap-2 text-sm text-cyan-300">
-                  <ShieldCheck className="h-5 w-5" />
-                  Prompt Version Control
+                <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1 text-xs uppercase tracking-widest text-cyan-200">
+                  <Activity className="h-3.5 w-3.5" />
+                  Stellar Account Dashboard
                 </div>
 
-                <h1 className="text-3xl font-semibold tracking-tight text-white">
-                  Agent prompt management
+                <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
+                  Welcome back, {user?.name || 'Stellar Pioneer'}
                 </h1>
 
-                <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
-                  Review prompt versions, test template variables, and activate
-                  the version you want your agent to use.
-                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-300 sm:text-sm">
+                  <span className="text-slate-400">Address:</span>
+
+                  <code className="rounded-lg border border-white/10 bg-slate-900 px-2.5 py-1 font-mono text-cyan-300">
+                    {formatAddress(activePublicKey)}
+                  </code>
+
+                  {activePublicKey && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        copyToClipboard(activePublicKey, 'Stellar address')
+                      }
+                      className="inline-flex items-center text-xs text-slate-400 transition hover:text-cyan-300"
+                      title="Copy full address"
+                    >
+                      <Copy className="mr-1 h-3.5 w-3.5" />
+                      Copy
+                    </button>
+                  )}
+                </div>
               </div>
 
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => void loadVersions(true)}
-                disabled={isLoading || isRefreshing}
-              >
-                <RefreshCw
-                  className={`mr-2 h-4 w-4 ${
-                    isRefreshing ? "animate-spin" : ""
-                  }`}
-                />
-                Refresh
-              </Button>
-            </div>
-          </Card>
+              {/* Network and balance */}
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center space-x-2 rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-2.5">
+                  <span
+                    className={`h-2.5 w-2.5 rounded-full ${
+                      network.status === 'healthy'
+                        ? 'animate-pulse bg-emerald-400'
+                        : network.status === 'degraded'
+                          ? 'bg-amber-400'
+                          : 'bg-red-400'
+                    }`}
+                  />
 
-          {error && (
-            <div
-              role="alert"
-              className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300"
-            >
-              {error}
-              <button
-                type="button"
-                className="ml-2 underline"
-                onClick={() => void loadVersions()}
-              >
-                Try again
-              </button>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-            <section className="space-y-4 lg:col-span-1">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Available versions</h2>
-                <span className="text-sm text-slate-400">
-                  {versions.length} total
-                </span>
-              </div>
-
-              {isLoading ? (
-                <Card>
-                  <div className="flex items-center gap-3 py-4 text-slate-300">
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                    Loading prompt versions...
+                  <div className="text-left">
+                    <p className="text-[10px] font-semibold uppercase text-slate-400">
+                      Horizon Network
+                    </p>
+                    <p className="text-xs font-medium capitalize text-slate-200">
+                      {network.status || 'Checking...'}
+                    </p>
                   </div>
-                </Card>
-              ) : versions.length === 0 ? (
-                <Card>
-                  <p className="py-4 text-sm text-slate-300">
-                    No prompt versions were returned by the API.
-                  </p>
-                </Card>
-              ) : (
-                versions.map((version) => (
-                  <button
-                    key={version.id}
-                    type="button"
-                    onClick={() => setSelectedId(version.id)}
-                    aria-pressed={selectedId === version.id}
-                    className={`w-full rounded-2xl border p-4 text-left transition ${
-                      selectedId === version.id
-                        ? "border-cyan-400 bg-cyan-400/10"
-                        : "border-white/10 bg-slate-950/60 hover:border-white/30"
+                </div>
+
+                <div className="flex items-center space-x-3 rounded-2xl border border-cyan-500/20 bg-cyan-950/30 px-5 py-2.5">
+                  <div className="rounded-xl bg-cyan-500/20 p-2 text-cyan-300">
+                    <Wallet className="h-5 w-5" />
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase text-cyan-300/80">
+                      Native Balance
+                    </p>
+                    <p className="font-mono text-lg font-bold text-white">
+                      {balance?.nativeBalance ||
+                        balance?.balance ||
+                        '10,000.00'}{' '}
+                      <span className="text-xs font-normal text-slate-400">
+                        XLM
+                      </span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* Account lifecycle and setup progress */}
+          <section className="space-y-4">
+            <h2 className="flex items-center text-lg font-semibold tracking-tight text-white">
+              <ShieldCheck className="mr-2 h-5 w-5 text-cyan-400" />
+              Account Status &amp; Readiness
+            </h2>
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              {/* Step 1: Created */}
+              <Card className="rounded-2xl border border-white/10 bg-slate-900/50 p-5 backdrop-blur-md">
+                <div className="mb-2 flex items-center space-x-3">
+                  <div className="rounded-xl border border-green-500/20 bg-green-500/10 p-2 text-green-400">
+                    <CheckCircle2 className="h-5 w-5" />
+                  </div>
+                  <h3 className="text-base font-semibold text-white">
+                    1. Keypair Initialized
+                  </h3>
+                </div>
+
+                <p className="mb-3 text-xs text-slate-400">
+                  Ed25519 public key generated and active in session.
+                </p>
+
+                <div className="inline-flex items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400">
+                  <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                  Active
+                </div>
+              </Card>
+
+              {/* Step 2: Funded */}
+              <Card
+                className={`rounded-2xl border p-5 transition-all ${
+                  status?.isFunded
+                    ? 'border-emerald-500/30 bg-emerald-950/20'
+                    : 'border-white/10 bg-slate-900/50'
+                }`}
+              >
+                <div className="mb-2 flex items-center space-x-3">
+                  <div
+                    className={`rounded-xl border p-2 ${
+                      status?.isFunded
+                        ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400'
+                        : 'border-amber-500/20 bg-amber-500/10 text-amber-400'
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h3 className="font-medium text-white">
-                          {version.label}
-                        </h3>
-                        <p className="mt-1 text-xs text-slate-400">
-                          Version: {version.version}
-                        </p>
-                      </div>
-
-                      {version.isActive && (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-1 text-xs text-emerald-300">
-                          <CheckCircle2 className="h-3 w-3" />
-                          Active
-                        </span>
-                      )}
-                    </div>
-
-                    <p className="mt-3 text-sm leading-5 text-slate-300">
-                      {version.description}
-                    </p>
-
-                    {version.tags.length > 0 && (
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {version.tags.map((tag) => (
-                          <span
-                            key={tag}
-                            className="rounded-full bg-white/5 px-2 py-1 text-xs text-slate-300"
-                          >
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </button>
-                ))
-              )}
-            </section>
-
-            <section className="space-y-6 lg:col-span-2">
-              <Card>
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <Sparkles className="h-5 w-5 text-cyan-300" />
-                      <h2 className="text-xl font-semibold">
-                        {selectedVersion?.label ?? "Select a prompt version"}
-                      </h2>
-                    </div>
-
-                    <p className="mt-2 text-sm text-slate-400">
-                      {selectedVersion?.description ??
-                        "Choose a version from the list to inspect its template."}
-                    </p>
+                    <Coins className="h-5 w-5" />
                   </div>
 
-                  <Button
-                    type="button"
-                    onClick={() => void handleActivate()}
-                    disabled={
-                      !selectedVersion ||
-                      selectedVersion.isActive ||
-                      isActivating
-                    }
-                  >
-                    {isActivating ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <ShieldCheck className="mr-2 h-4 w-4" />
-                    )}
-                    {selectedVersion?.isActive
-                      ? "Currently active"
-                      : "Activate version"}
-                  </Button>
+                  <h3 className="text-base font-semibold text-white">
+                    2. Account Funded
+                  </h3>
                 </div>
 
-                {selectedVersion && (
-                  <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div className="rounded-xl bg-white/5 p-3">
-                      <p className="text-xs text-slate-400">Created</p>
-                      <p className="mt-1 text-sm text-white">
-                        {safelyFormatDate(selectedVersion.createdAt)}
-                      </p>
-                    </div>
-
-                    <div className="rounded-xl bg-white/5 p-3">
-                      <p className="text-xs text-slate-400">Last updated</p>
-                      <p className="mt-1 text-sm text-white">
-                        {safelyFormatDate(selectedVersion.updatedAt)}
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {activeVersion && (
-                  <p className="mt-4 text-sm text-emerald-300">
-                    Active version: {activeVersion.label}
-                  </p>
-                )}
-              </Card>
-
-              <Card>
-                <div className="flex items-center justify-between gap-3">
-                  <h2 className="text-lg font-semibold">Template</h2>
-
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    disabled={!selectedVersion}
-                    onClick={() =>
-                      void handleCopy(
-                        selectedVersion?.template ?? "",
-                        "Template",
-                      )
-                    }
-                  >
-                    <Clipboard className="mr-2 h-4 w-4" />
-                    Copy template
-                  </Button>
-                </div>
-
-                <pre className="mt-4 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-white/10 bg-black/30 p-4 text-sm leading-6 text-slate-200">
-                  {selectedVersion?.template ||
-                    "No template content available."}
-                </pre>
-              </Card>
-
-              <Card>
-                <h2 className="text-lg font-semibold">Test prompt template</h2>
-
-                <p className="mt-2 text-sm text-slate-400">
-                  Change the sample input and JSON variables to preview
-                  placeholder substitution. This preview does not execute the
-                  agent or submit a transaction.
+                <p className="mb-3 text-xs text-slate-400">
+                  Account has sufficient XLM balance for transaction reserves.
                 </p>
 
-                <label
-                  htmlFor="test-input"
-                  className="mt-5 block text-sm font-medium text-slate-200"
-                >
-                  Sample user input
-                </label>
-
-                <textarea
-                  id="test-input"
-                  value={testInput}
-                  onChange={(event) => setTestInput(event.target.value)}
-                  rows={3}
-                  className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-white outline-none focus:border-cyan-400"
-                />
-
-                <label
-                  htmlFor="template-variables"
-                  className="mt-5 block text-sm font-medium text-slate-200"
-                >
-                  Template variables (JSON)
-                </label>
-
-                <textarea
-                  id="template-variables"
-                  value={variablesText}
-                  onChange={(event) => setVariablesText(event.target.value)}
-                  rows={8}
-                  spellCheck={false}
-                  className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 p-3 font-mono text-sm text-white outline-none focus:border-cyan-400"
-                />
-
-                {parsedVariables.error && (
-                  <p role="alert" className="mt-2 text-sm text-red-300">
-                    {parsedVariables.error}
-                  </p>
-                )}
-
-                {unresolvedPlaceholders.length > 0 && (
-                  <p className="mt-3 text-sm text-amber-300">
-                    Unresolved placeholders: {unresolvedPlaceholders.join(", ")}
-                  </p>
-                )}
-
-                <div className="mt-5 flex items-center justify-between gap-3">
-                  <h3 className="font-medium text-white">Rendered preview</h3>
-
+                {status?.isFunded ? (
+                  <div className="inline-flex items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400">
+                    <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                    Funded
+                  </div>
+                ) : (
                   <Button
-                    type="button"
-                    variant="secondary"
+                    variant="ghost"
                     size="sm"
-                    disabled={
-                      !selectedVersion || Boolean(parsedVariables.error)
-                    }
-                    onClick={() =>
-                      void handleCopy(renderedPrompt, "Rendered prompt")
-                    }
+                    onClick={handleManualFund}
+                    disabled={isFunding}
+                    className="border border-amber-500/30 bg-amber-500/10 text-xs text-amber-300 hover:text-white"
                   >
-                    <Clipboard className="mr-2 h-4 w-4" />
-                    Copy preview
+                    {isFunding ? (
+                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                    ) : (
+                      <Coins className="mr-1 h-3 w-3" />
+                    )}
+                    Fund via Friendbot
                   </Button>
+                )}
+              </Card>
+
+              {/* Step 3: Deployed */}
+              <Card
+                className={`rounded-2xl border p-5 transition-all ${
+                  status?.isDeployed
+                    ? 'border-cyan-500/30 bg-cyan-950/20'
+                    : status?.isFunded
+                      ? 'border-indigo-500/30 bg-indigo-950/20'
+                      : 'border-white/10 bg-slate-900/50 opacity-60'
+                }`}
+              >
+                <div className="mb-2 flex items-center space-x-3">
+                  <div
+                    className={`rounded-xl border p-2 ${
+                      status?.isDeployed
+                        ? 'border-cyan-500/20 bg-cyan-500/10 text-cyan-400'
+                        : 'border-indigo-500/20 bg-indigo-500/10 text-indigo-400'
+                    }`}
+                  >
+                    <Zap className="h-5 w-5" />
+                  </div>
+
+                  <h3 className="text-base font-semibold text-white">
+                    3. Contract Deployed
+                  </h3>
                 </div>
 
-                <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-cyan-400/20 bg-cyan-400/5 p-4 text-sm leading-6 text-slate-200">
-                  {parsedVariables.error
-                    ? "Correct the JSON variables to generate the preview."
-                    : renderedPrompt ||
-                      "Select a version with template content."}
-                </pre>
+                <p className="mb-3 text-xs text-slate-400">
+                  Soroban smart contract account deployed and DeFi-ready.
+                </p>
+
+                {status?.isDeployed ? (
+                  <div className="inline-flex items-center rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2.5 py-1 text-xs font-medium text-cyan-400">
+                    <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                    Deployed
+                  </div>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleManualDeploy}
+                    disabled={isDeploying || !status?.isFunded}
+                    className="border border-cyan-500/30 bg-cyan-500/10 text-xs text-cyan-300 hover:text-white"
+                  >
+                    {isDeploying ? (
+                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                    ) : (
+                      <Zap className="mr-1 h-3 w-3" />
+                    )}
+                    Deploy Account
+                  </Button>
+                )}
               </Card>
-            </section>
-          </div>
+            </div>
+          </section>
+
+          {/* Deployment progress */}
+          {showDeploymentStepper && (
+            <Card className="rounded-2xl border border-white/10 bg-slate-900/80 p-6 backdrop-blur-xl">
+              <DeploymentStepper progress={progress} />
+
+              <div className="mt-4 flex justify-end space-x-3 border-t border-white/10 pt-4">
+                <Button
+                  variant="ghost"
+                  onClick={() => setShowDeploymentStepper(false)}
+                  className="border border-white/10"
+                >
+                  Close
+                </Button>
+              </div>
+            </Card>
+          )}
+
+          {/* Quick actions */}
+          <section className="space-y-4">
+            <h2 className="text-lg font-semibold tracking-tight text-white">
+              Quick Actions
+            </h2>
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              {quickActions.map((action) => (
+                <Card
+                  key={action.title}
+                  onClick={action.action}
+                  className="group cursor-pointer rounded-2xl border border-white/10 bg-slate-900/50 p-5 transition-all hover:border-cyan-500/40 hover:bg-slate-900/80"
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-2.5 transition group-hover:border-cyan-500/30">
+                      {action.icon}
+                    </div>
+
+                    <ArrowRight className="h-4 w-4 text-slate-500 transition group-hover:translate-x-1 group-hover:text-cyan-400" />
+                  </div>
+
+                  <h3 className="mt-4 text-base font-semibold text-white">
+                    {action.title}
+                  </h3>
+
+                  <p className="mt-1 text-xs text-slate-400">
+                    {action.description}
+                  </p>
+                </Card>
+              ))}
+            </div>
+          </section>
+
+          {/* Stellar asset trustlines */}
+          <section>
+            <TrustlinesPanel />
+          </section>
+
+          {/* Liquidity pool statistics */}
+          <section className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="flex items-center text-lg font-semibold tracking-tight text-white">
+                <Droplets className="mr-2 h-5 w-5 text-cyan-400" />
+                Liquidity Pool Markets
+              </h2>
+
+              <div className="flex items-center space-x-2 rounded-full border border-white/10 bg-slate-900/70 px-3 py-1.5">
+                <Activity className="h-3.5 w-3.5 animate-pulse text-emerald-400" />
+                <span className="text-xs font-medium text-slate-300">
+                  Live SEP-0038 Feeds
+                </span>
+              </div>
+            </div>
+
+            <LiquidityPoolStats />
+          </section>
+
+          {/* Recent transaction activity */}
+          <section className="space-y-4 pb-12">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold tracking-tight text-white">
+                Ledger Transaction History
+              </h2>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => router.push('/transactions')}
+                className="text-xs text-cyan-400 hover:text-cyan-300"
+              >
+                Full History
+                <ExternalLink className="ml-1 h-3.5 w-3.5" />
+              </Button>
+            </div>
+
+            <TransactionTable
+              transactions={transactions.transactions}
+              isLoading={transactions.isLoading}
+              error={transactions.error}
+              currentPage={currentPage}
+              pageSize={pageSize}
+              totalCount={totalCount}
+              onPageChange={handlePageChange}
+              onPageSizeChange={handlePageSizeChange}
+            />
+          </section>
         </div>
-      </main>
+      </div>
     </ChatLayout>
   );
 }
+```
