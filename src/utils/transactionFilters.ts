@@ -1,10 +1,17 @@
+import type { StellarTransaction, TransactionLifecycleStatus } from "@/types";
 
-import type { StellarTransaction } from "@/types";
-
-export type TransactionStatusFilter = "all" | "successful" | "failed";
+export type TransactionStatusFilter =
+  | "all"
+  | "confirmed"
+  | "successful"
+  | "failed"
+  | "pending";
 
 export function filterTransactionsByStatus<
-  T extends Pick<StellarTransaction, "successful">
+  T extends {
+    successful?: boolean;
+    status?: TransactionLifecycleStatus | string;
+  }
 >(
   transactions: T[],
   status: TransactionStatusFilter,
@@ -13,9 +20,28 @@ export function filterTransactionsByStatus<
     return transactions;
   }
 
-  const successful = status === "successful";
+  if (status === "pending") {
+    return transactions.filter(
+      (transaction) => transaction.status === "pending",
+    );
+  }
 
-  return transactions.filter(
-    (transaction) => transaction.successful === successful,
-  );
+  if (status === "confirmed" || status === "successful") {
+    return transactions.filter(
+      (transaction) =>
+        transaction.status === "confirmed" ||
+        (transaction.status === undefined && transaction.successful === true),
+    );
+  }
+
+  if (status === "failed") {
+    return transactions.filter(
+      (transaction) =>
+        transaction.status !== "pending" &&
+        (transaction.status === "failed" ||
+          (transaction.status === undefined && transaction.successful === false)),
+    );
+  }
+
+  return transactions;
 }

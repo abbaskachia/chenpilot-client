@@ -118,7 +118,13 @@ The service includes methods for Stellar/Starknet account and funding paths, but
 
 ### Transaction Status Filtering
 
-Transaction records expose a `successful` boolean. The status filters therefore offer **Successful** and **Failed**. Neither the account response nor Stellar Horizon's transaction list exposes a pending status, so pending must not be inferred as failed. The account endpoint currently supports `page` and `limit`, but not server-side status filtering; the dashboard table filters the currently loaded page.
+Transaction history filters agree with the backend data model and the transaction lifecycle contract (`pending | confirmed | failed`). The history status filters support **All statuses** (`all`), **Confirmed** (`confirmed`, synonymous with `successful`), **Failed** (`failed`), and **Pending** (`pending`).
+
+- **Confirmed / Successful**: Matches transactions with `status === 'confirmed'` or authoritative ledger transactions where `successful === true`.
+- **Failed**: Matches transactions with `status === 'failed'` or `successful === false`, keeping `pending` strictly distinct so pending transactions are never inferred or grouped as failed.
+- **Pending**: Matches submitted transactions in the lifecycle contract awaiting authoritative ledger confirmation (`status === 'pending'`). In the transaction history view, pending confirmations are kept distinct and filtered accordingly.
+
+Filtering is executed client-side over loaded transaction records and pending confirmations, preserving pagination and Horizon cursor state (`nextCursor`) so users can load older pages while keeping the active filter applied. The account endpoint currently supports `page` and `limit`, but not server-side status filtering; the dashboard table and transactions page filter loaded data without resetting or dropping cursor state.
 
 ### Transaction Schema & Direction Contract
 

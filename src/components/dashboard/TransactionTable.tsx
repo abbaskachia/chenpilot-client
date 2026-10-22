@@ -6,6 +6,7 @@ import type {
   StellarTransaction,
   StellarOperation,
   TransactionDirection,
+  TransactionLifecycleStatus,
 } from "@/types";
 import {
   formatAddress,
@@ -50,6 +51,8 @@ export interface TransactionTableProps {
   locale?: string;
   activeAccountAddress?: string;
   accountAddress?: string;
+  statusFilter?: TransactionStatusFilter;
+  onStatusFilterChange?: (status: TransactionStatusFilter) => void;
 }
 
 const OPERATION_TYPE_LABELS: { [key: string]: string } = {
@@ -214,13 +217,24 @@ export default function TransactionTable({
   locale,
   activeAccountAddress,
   accountAddress,
+  statusFilter: statusFilterProp,
+  onStatusFilterChange,
 }: TransactionTableProps) {
-  const [statusFilter, setStatusFilter] =
+  const [internalStatusFilter, setInternalStatusFilter] =
     useState<TransactionStatusFilter>("all");
+
+  const effectiveStatusFilter = statusFilterProp ?? internalStatusFilter;
+
+  const handleStatusFilterChange = (nextStatus: TransactionStatusFilter) => {
+    if (statusFilterProp === undefined) {
+      setInternalStatusFilter(nextStatus);
+    }
+    onStatusFilterChange?.(nextStatus);
+  };
 
   const filteredTransactions = filterTransactionsByStatus(
     transactions,
-    statusFilter,
+    effectiveStatusFilter,
   );
 
   const reduxLanguage = useAppSelector(
@@ -271,8 +285,13 @@ export default function TransactionTable({
   const getDirectionIcon = (
     direction: TransactionDirection,
     successful: boolean,
+    status?: TransactionLifecycleStatus,
   ) => {
-    if (!successful) {
+    if (status === "pending") {
+      return <Loader2 className="h-4 w-4 animate-spin text-yellow-400" />;
+    }
+
+    if (!successful && status !== "confirmed") {
       return <AlertCircle className="h-4 w-4 text-red-400" />;
     }
 
@@ -291,8 +310,13 @@ export default function TransactionTable({
   const getDirectionContainerClass = (
     direction: TransactionDirection,
     successful: boolean,
+    status?: TransactionLifecycleStatus,
   ) => {
-    if (!successful) {
+    if (status === "pending") {
+      return "bg-yellow-500/20";
+    }
+
+    if (!successful && status !== "confirmed") {
       return "bg-red-500/20";
     }
 
@@ -352,17 +376,19 @@ export default function TransactionTable({
             <span>Status</span>
             <select
               aria-label="Filter transactions by status"
-              value={statusFilter}
+              value={effectiveStatusFilter}
               onChange={(event) =>
-                setStatusFilter(
+                handleStatusFilterChange(
                   event.target.value as TransactionStatusFilter,
                 )
               }
               className="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-white"
             >
               <option value="all">All statuses</option>
+              <option value="confirmed">Confirmed</option>
               <option value="successful">Successful</option>
               <option value="failed">Failed</option>
+              <option value="pending">Pending</option>
             </select>
           </label>
         </div>
@@ -439,9 +465,10 @@ export default function TransactionTable({
                             className={`rounded-full p-2 ${getDirectionContainerClass(
                               direction,
                               tx.successful,
+                              tx.status,
                             )}`}
                           >
-                            {getDirectionIcon(direction, tx.successful)}
+                            {getDirectionIcon(direction, tx.successful, tx.status)}
                           </div>
                           <div>
                             <p className="font-medium text-white">
@@ -525,7 +552,14 @@ export default function TransactionTable({
                       </td>
 
                       <td className="px-4 py-3">
-                        {tx.successful ? (
+                        {tx.status === "pending" ? (
+                          <div className="flex items-center space-x-1">
+                            <Loader2 className="h-4 w-4 animate-spin text-yellow-400" />
+                            <span className="font-medium text-yellow-400">
+                              Pending
+                            </span>
+                          </div>
+                        ) : tx.successful || tx.status === "confirmed" ? (
                           <div className="flex items-center space-x-1">
                             <Check className="h-4 w-4 text-green-400" />
                             <span className="font-medium text-green-400">
@@ -564,7 +598,7 @@ export default function TransactionTable({
         <div className="flex items-center justify-between border-t border-gray-800 pt-4">
           <div className="flex flex-wrap items-center gap-4">
             <span className="text-sm text-gray-400">
-              {statusFilter === "all"
+              {effectiveStatusFilter === "all"
                 ? `Showing ${startIndex} to ${endIndex} of ${totalCount} transactions`
                 : `Showing ${filteredTransactions.length} matching transactions on this page (${totalCount} total)`}
             </span>

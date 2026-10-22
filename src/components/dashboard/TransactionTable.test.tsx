@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StellarTransaction, StellarOperation } from '@/types';
 
@@ -91,7 +91,7 @@ describe('TransactionTable locale-aware formatting', () => {
       screen.getByText('Showing 1 to 10 of 25 transactions')
     ).toBeInTheDocument();
     expect(screen.getByText('Per page:')).toBeInTheDocument();
-    expect(screen.getByRole('combobox')).toHaveValue('10');
+    expect(screen.getByRole('combobox', { name: /per page/i })).toHaveValue('10');
   });
 });
 
@@ -438,6 +438,183 @@ describe('Transaction Direction Classification & Amount Formatting', () => {
       );
 
       expect(screen.getByText('Network error fetching transactions')).toBeDefined();
+    });
+  });
+
+  describe('TransactionTable Status Filtering', () => {
+    const statusTxs: StellarTransaction[] = [
+      {
+        id: 'tx-conf',
+        hash: '0x1111111111111111111111111111111111111111111111111111111111111111',
+        ledger: 101,
+        created_at: '2026-10-20T10:00:00Z',
+        source_account: activeUser,
+        fee_charged: '100',
+        operation_count: 1,
+        successful: true,
+        status: 'confirmed',
+        operations: [
+          {
+            id: 'op-1',
+            type: 'payment',
+            amount: '10',
+            asset: 'XLM',
+            from: activeUser,
+            to: otherUser,
+            source_account: activeUser,
+          },
+        ],
+      },
+      {
+        id: 'tx-fail',
+        hash: '0x2222222222222222222222222222222222222222222222222222222222222222',
+        ledger: 102,
+        created_at: '2026-10-20T10:05:00Z',
+        source_account: activeUser,
+        fee_charged: '100',
+        operation_count: 1,
+        successful: false,
+        status: 'failed',
+        operations: [
+          {
+            id: 'op-2',
+            type: 'payment',
+            amount: '20',
+            asset: 'XLM',
+            from: activeUser,
+            to: otherUser,
+            source_account: activeUser,
+          },
+        ],
+      },
+      {
+        id: 'tx-pend',
+        hash: '0x3333333333333333333333333333333333333333333333333333333333333333',
+        ledger: 103,
+        created_at: '2026-10-20T10:10:00Z',
+        source_account: activeUser,
+        fee_charged: '100',
+        operation_count: 1,
+        successful: false,
+        status: 'pending',
+        operations: [
+          {
+            id: 'op-3',
+            type: 'payment',
+            amount: '30',
+            asset: 'XLM',
+            from: activeUser,
+            to: otherUser,
+            source_account: activeUser,
+          },
+        ],
+      },
+    ];
+
+    it('renders all status options supported by the transaction contract', () => {
+      render(
+        <TransactionTable
+          {...baseProps}
+          transactions={statusTxs}
+          totalCount={statusTxs.length}
+        />
+      );
+
+      const statusSelect = screen.getByRole('combobox', {
+        name: /filter transactions by status/i,
+      });
+      expect(statusSelect).toBeInTheDocument();
+
+      const options = Array.from(statusSelect.querySelectorAll('option')).map(
+        (o) => o.value
+      );
+      expect(options).toEqual([
+        'all',
+        'confirmed',
+        'successful',
+        'failed',
+        'pending',
+      ]);
+    });
+
+    it('filters for confirmed transactions when confirmed or successful is selected', () => {
+      render(
+        <TransactionTable
+          {...baseProps}
+          transactions={statusTxs}
+          totalCount={statusTxs.length}
+        />
+      );
+
+      const statusSelect = screen.getByRole('combobox', {
+        name: /filter transactions by status/i,
+      });
+
+      fireEvent.change(statusSelect, { target: { value: 'confirmed' } });
+      expect(screen.getByRole('cell', { name: /success/i })).toBeInTheDocument();
+      expect(screen.queryByRole('cell', { name: /failed/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('cell', { name: /pending/i })).not.toBeInTheDocument();
+    });
+
+    it('keeps pending distinct from failed transactions when filtering by failed', () => {
+      render(
+        <TransactionTable
+          {...baseProps}
+          transactions={statusTxs}
+          totalCount={statusTxs.length}
+        />
+      );
+
+      const statusSelect = screen.getByRole('combobox', {
+        name: /filter transactions by status/i,
+      });
+
+      fireEvent.change(statusSelect, { target: { value: 'failed' } });
+      expect(screen.getByRole('cell', { name: /failed/i })).toBeInTheDocument();
+      expect(screen.queryByRole('cell', { name: /pending/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('cell', { name: /success/i })).not.toBeInTheDocument();
+    });
+
+    it('filters for pending transactions exclusively with pending badge', () => {
+      render(
+        <TransactionTable
+          {...baseProps}
+          transactions={statusTxs}
+          totalCount={statusTxs.length}
+        />
+      );
+
+      const statusSelect = screen.getByRole('combobox', {
+        name: /filter transactions by status/i,
+      });
+
+      fireEvent.change(statusSelect, { target: { value: 'pending' } });
+      expect(screen.getByRole('cell', { name: /pending/i })).toBeInTheDocument();
+      expect(screen.queryByRole('cell', { name: /failed/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('cell', { name: /success/i })).not.toBeInTheDocument();
+    });
+
+    it('displays matching empty message when no rows match status filter without dropping pagination state', () => {
+      render(
+        <TransactionTable
+          {...baseProps}
+          transactions={[statusTxs[0]]}
+          totalCount={1}
+        />
+      );
+
+      const statusSelect = screen.getByRole('combobox', {
+        name: /filter transactions by status/i,
+      });
+
+      fireEvent.change(statusSelect, { target: { value: 'failed' } });
+      expect(
+        screen.getByText('No transactions match this status on this page.')
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText('Showing 0 matching transactions on this page (1 total)')
+      ).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /per page/i })).toBeInTheDocument();
     });
   });
 });

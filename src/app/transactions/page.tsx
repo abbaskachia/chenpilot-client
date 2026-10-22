@@ -54,25 +54,33 @@ export default function TransactionsPage() {
     useState<TransactionStatusFilter>("all");
 
   const publicKey = status?.publicKey ?? null;
-  const hasHistory = transactions.transactions.length > 0;
+  const transactionList = transactions?.transactions ?? [];
+  const pendingList = transactions?.pending ?? [];
+  const hasHistory = transactionList.length > 0;
 
   const filteredTransactions = useMemo(
     () =>
       filterTransactionsByStatus(
-        transactions.transactions,
+        transactionList,
         statusFilter,
       ),
-    [transactions.transactions, statusFilter],
+    [transactionList, statusFilter],
   );
 
   const lastUpdatedLabel = useMemo(
-    () => formatLastUpdated(transactions.lastUpdatedAt),
-    [transactions.lastUpdatedAt],
+    () => formatLastUpdated(transactions?.lastUpdatedAt ?? null),
+    [transactions?.lastUpdatedAt],
   );
 
+  const showPendingConfirmations =
+    statusFilter === "all" || statusFilter === "pending";
+
   const pendingConfirmations = useMemo(
-    () => transactions.pending.filter((entry) => entry.status === "pending"),
-    [transactions.pending],
+    () =>
+      showPendingConfirmations
+        ? pendingList.filter((entry) => entry.status === "pending")
+        : [],
+    [showPendingConfirmations, pendingList],
   );
 
   useEffect(() => {
@@ -108,8 +116,14 @@ export default function TransactionsPage() {
     );
   }, [dispatch, publicKey, transactions.nextCursor]);
 
-  const getStatusColor = (successful: boolean) =>
-    successful ? "text-green-600" : "text-red-600";
+  const getStatusColor = (successful: boolean, status?: string) => {
+    if (status === "pending") {
+      return "text-yellow-600 dark:text-yellow-400";
+    }
+    return successful || status === "confirmed"
+      ? "text-green-600 dark:text-green-400"
+      : "text-red-600 dark:text-red-400";
+  };
 
   const getOperationType = (type: string) => {
     switch (type) {
@@ -253,15 +267,18 @@ export default function TransactionsPage() {
               onChange={(event) =>
                 setStatusFilter(event.target.value as TransactionStatusFilter)
               }
-              className="rounded border border-gray-300 bg-white px-2 py-1 text-gray-900"
+              className="rounded border border-gray-300 bg-white px-2 py-1 text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
             >
               <option value="all">All statuses</option>
+              <option value="confirmed">Confirmed</option>
               <option value="successful">Successful</option>
               <option value="failed">Failed</option>
+              <option value="pending">Pending</option>
             </select>
           </label>
 
-          {filteredTransactions.length === 0 ? (
+          {filteredTransactions.length === 0 &&
+          !(statusFilter === "pending" && pendingConfirmations.length > 0) ? (
             <p role="status">No transactions match this status.</p>
           ) : (
             filteredTransactions.map((tx) => (
@@ -275,8 +292,17 @@ export default function TransactionsPage() {
                       {formatTransactionDate(tx.created_at, { language })}
                     </p>
                   </div>
-                  <div className={`font-semibold ${getStatusColor(tx.successful)}`}>
-                    {tx.successful ? "Confirmed" : "Failed"}
+                  <div
+                    className={`font-semibold ${getStatusColor(
+                      tx.successful,
+                      tx.status,
+                    )}`}
+                  >
+                    {tx.status === "pending"
+                      ? "Pending"
+                      : tx.successful || tx.status === "confirmed"
+                        ? "Confirmed"
+                        : "Failed"}
                   </div>
                 </div>
 
